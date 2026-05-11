@@ -61,11 +61,15 @@ SegFormer required a **4-channel patch embedding adaptation**: RGB weights are p
 | Dice ED | 0.7239 | 0.7104 | **0.7229** |
 | Dice ET | 0.5398 | 0.5946 | **0.6299** |
 | **Mean FG Dice** | 0.6164 | 0.6213 | **0.6760** |
+| IoU NCR | 0.5103 | 0.4940 | **0.5941** |
+| IoU ED | 0.6162 | 0.5947 | **0.6173** |
+| IoU ET | 0.4999 | 0.5657 | **0.6027** |
+| **Mean FG IoU** | 0.5421 | 0.5515 | **0.6047** |
 | HD95 NCR (mm) | 9.21 | 8.70 | **5.23** |
 | HD95 ED (mm) | **7.45** | 7.63 | 8.15 |
 | HD95 ET (mm) | 17.85 | 18.69 | **14.60** |
 
-**SegFormer-B1** is the best model overall: +9.7% mean FG Dice vs U-Net, +20.8% relative improvement on NCR, 44% fewer parameters.
+**SegFormer-B1** is the best model overall: +9.7% mean FG Dice vs U-Net (0.6760 vs 0.6164), +11.5% mean FG IoU (0.6047 vs 0.5421), +20.8% relative improvement on NCR Dice, 44% fewer parameters.
 
 ### 2D Slice-Level Metrics — Test Set (best checkpoint)
 
@@ -75,7 +79,7 @@ SegFormer required a **4-channel patch embedding adaptation**: RGB weights are p
 | FPN / ResNet34 | 0.8474 | 0.8147 | 0.8761 | 0.8461 | 15 |
 | SegFormer-B1 | **0.8580** | 0.8008 | **0.8598** | **0.8554** | 14 |
 
-The ~20–25% Dice drop from 2D to 3D is expected for slice-based architectures with no 3D context.
+**Note:** these two tables compute Dice with different denominators. 2D Dice averages per-slice across the entire test set (slices without the class still appear in the denominator). 3D Dice reconstructs each subject's volume and computes one Dice per (subject, class) before averaging. The ~20–25% gap is expected for slice-based architectures with no 3D context, but the metrics are not directly comparable.
 
 ---
 
