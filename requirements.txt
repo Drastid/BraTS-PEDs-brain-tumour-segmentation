@@ -29,3 +29,6 @@ medpy
 # Jupyter
 ipykernel
 ipywidgets
+
+# Testing
+pytest
