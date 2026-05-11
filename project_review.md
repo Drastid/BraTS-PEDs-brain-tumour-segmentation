@@ -4,6 +4,8 @@
 **Date**: 2026-04-29  
 **Scope**: Full codebase audit vs `CONTEXT.md` specifications
 
+> **Status (2026-05-11):** historical document. Every 🔴 / 🟡 item flagged below has been closed. For the up-to-date state of the project, see `current_progress_review.md` and `next_steps_action_plan.md`.
+
 ---
 
 ## 1. Stato Attuale del Progetto — Panoramica

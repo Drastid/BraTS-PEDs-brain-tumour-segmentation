@@ -81,4 +81,4 @@ Detailed results → `README.md` §Results. Per-epoch tables → `context.md`.
 
 ## 8. Known Open Items
 
-See `next_steps_action_plan.md`. Highest-priority remaining work: implement `compute_iou_volume()` (spec requires IoU but it is not computed); move `import warnings` to module-level in `eval_utils.py`; centralise constants into `src/constants.py`. Cross-domain evaluation is blocked on external data.
+See `next_steps_action_plan.md`. All code-side spec gaps closed as of 2026-05-11 (IoU, `import warnings`, constants centralisation, unit tests, NIfTI exports, output directories — done). Only remaining roadmap item is TASK 9 (cross-domain zero-shot evaluation), blocked on external adult BraTS data.
