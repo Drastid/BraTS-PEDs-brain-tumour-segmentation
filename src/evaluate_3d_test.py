@@ -47,6 +47,7 @@ from src.eval_utils import (
     remove_small_components,
     compute_dice_volume,
     compute_hd95_volume,
+    compute_iou_volume,
     CLASS_NAMES,
 )
 from src.train_utils import load_checkpoint
@@ -193,10 +194,14 @@ def evaluate_3d_on_test(
             # ── 4. HD95 (on post-processed prediction) ──
             hd95 = compute_hd95_volume(pred_pp, gt_vol, voxel_spacing=VOXEL_SPACING)
 
-            # ── 5. Accumulate ──
+            # ── 5. IoU (on post-processed prediction) ──
+            iou = compute_iou_volume(pred_pp, gt_vol)
+
+            # ── 6. Accumulate ──
             record = {"subject_id": subject_id}
             record.update(dice)
             record.update(hd95)
+            record.update(iou)
             records.append(record)
 
             # Progress
@@ -220,8 +225,10 @@ def evaluate_3d_on_test(
     for cls in TUMOUR_CLASSES:
         dice_col = f"dice_{cls}"
         hd95_col = f"hd95_{cls}"
+        iou_col  = f"iou_{cls}"
         dice_vals = df[dice_col].values
         hd95_vals = df[hd95_col].values
+        iou_vals  = df[iou_col].values
         n_hd95_nan = int(np.sum(np.isnan(hd95_vals)))
 
         summary_rows.append({
@@ -230,13 +237,17 @@ def evaluate_3d_on_test(
             "Dice std":       f"{np.nanstd(dice_vals):.4f}",
             "Dice min":       f"{np.nanmin(dice_vals):.4f}",
             "Dice max":       f"{np.nanmax(dice_vals):.4f}",
+            "IoU mean":       f"{np.nanmean(iou_vals):.4f}",
+            "IoU std":        f"{np.nanstd(iou_vals):.4f}",
             "HD95 mean (mm)": f"{np.nanmean(hd95_vals):.2f}" if n_hd95_nan < len(hd95_vals) else "N/A",
             "HD95 std (mm)":  f"{np.nanstd(hd95_vals):.2f}"  if n_hd95_nan < len(hd95_vals) else "N/A",
             "HD95 NaN count": n_hd95_nan,
         })
 
     fg_dice_cols = [f"dice_{c}" for c in TUMOUR_CLASSES]
+    fg_iou_cols  = [f"iou_{c}"  for c in TUMOUR_CLASSES]
     mean_fg_dice = np.nanmean(df[fg_dice_cols].values)
+    mean_fg_iou  = np.nanmean(df[fg_iou_cols].values)
 
     summary_df = pd.DataFrame(summary_rows).set_index("Class")
 
@@ -246,6 +257,7 @@ def evaluate_3d_on_test(
     print(summary_df.to_string())
     print()
     print(f"  Mean foreground Dice (3D, post-processed): {mean_fg_dice:.4f}")
+    print(f"  Mean foreground IoU  (3D, post-processed): {mean_fg_iou:.4f}")
     print(f"{'=' * 70}")
 
     return df
@@ -283,16 +295,21 @@ def save_results(df: pd.DataFrame, model_name: str) -> str:
     for cls in TUMOUR_CLASSES:
         dice_vals = df[f"dice_{cls}"].values
         hd95_vals = df[f"hd95_{cls}"].values
+        iou_vals  = df[f"iou_{cls}"].values
         result["summary"][cls] = {
             "dice_mean": float(np.nanmean(dice_vals)),
             "dice_std":  float(np.nanstd(dice_vals)),
+            "iou_mean":  float(np.nanmean(iou_vals)),
+            "iou_std":   float(np.nanstd(iou_vals)),
             "hd95_mean": float(np.nanmean(hd95_vals)) if not np.all(np.isnan(hd95_vals)) else None,
             "hd95_std":  float(np.nanstd(hd95_vals))  if not np.all(np.isnan(hd95_vals)) else None,
             "hd95_nan_count": int(np.sum(np.isnan(hd95_vals))),
         }
 
     fg_dice_cols = [f"dice_{c}" for c in TUMOUR_CLASSES]
+    fg_iou_cols  = [f"iou_{c}"  for c in TUMOUR_CLASSES]
     result["summary"]["mean_fg_dice"] = float(np.nanmean(df[fg_dice_cols].values))
+    result["summary"]["mean_fg_iou"]  = float(np.nanmean(df[fg_iou_cols].values))
 
     # Handle NaN values for JSON serialization
     def nan_to_none(obj):

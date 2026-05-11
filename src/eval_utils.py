@@ -442,6 +442,37 @@ def compute_dice_volume(
     return results
 
 
+def compute_iou_volume(
+    pred: np.ndarray,
+    gt: np.ndarray,
+    smooth: float = 1e-6,
+) -> Dict[str, float]:
+    """Compute per-class Intersection-over-Union (Jaccard) on 3D label volumes.
+
+    Uses the standard formula:
+        IoU_c = (|P_c ∩ G_c| + ε) / (|P_c ∪ G_c| + ε)
+
+    Args:
+        pred:   np.ndarray ``[H, W, D]`` integer predicted labels.
+        gt:     np.ndarray ``[H, W, D]`` integer ground-truth labels.
+        smooth: Laplace smoothing term (default 1e-6) to avoid division by zero
+                when both prediction and ground-truth are empty for a class.
+                Returns 1.0 (perfect agreement) in that degenerate case.
+
+    Returns:
+        Dict mapping ``"iou_<classname>"`` → float in [0, 1].
+        Includes all 4 classes: background, NCR, ED, ET.
+    """
+    results: Dict[str, float] = {}
+    for c, name in enumerate(CLASS_NAMES):
+        pred_c = (pred == c)
+        gt_c   = (gt   == c)
+        inter  = float((pred_c & gt_c).sum())
+        union  = float((pred_c | gt_c).sum())
+        results[f"iou_{name}"] = (inter + smooth) / (union + smooth)
+    return results
+
+
 # ---------------------------------------------------------------------------
 # HD95 (SUB-TASK 2)
 # ---------------------------------------------------------------------------
