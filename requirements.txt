@@ -1,0 +1,31 @@
+# Core scientific stack
+numpy
+matplotlib
+scipy
+tqdm
+pandas
+
+# Medical imaging I/O
+nibabel
+SimpleITK
+
+# Deep Learning
+torch
+torchvision
+
+# Segmentation models with pretrained backbones
+segmentation-models-pytorch
+
+# Transformers (SegFormer)
+transformers
+accelerate
+
+# Data augmentation
+albumentations
+
+# Medical evaluation metrics (HD95)
+medpy
+
+# Jupyter
+ipykernel
+ipywidgets

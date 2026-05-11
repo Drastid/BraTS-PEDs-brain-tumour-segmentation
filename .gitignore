@@ -1,0 +1,60 @@
+# =============================================================================
+# BraTS-PEDs Brain Tumour Segmentation — .gitignore
+# =============================================================================
+
+# --- Virtual environments ---
+# Multiple .venv directories exist due to Python 3.14 compatibility issues
+# during setup. Only .venv is active; all are excluded from version control.
+.venv/
+.venv-1/
+.venv-2/
+.venv-3/
+.venv-4/
+venv/
+env/
+
+# --- Raw NIfTI dataset ---
+# BraTS-PEDs-v1 raw data (NIfTI .nii.gz files, ~tens of GB).
+# Download separately from the BraTS challenge portal.
+PKG - BraTS-PEDs-v1/
+
+# --- Preprocessed dataset ---
+# 39,538 extracted 2D slice pairs (.npy, ~20GB total).
+# Regenerate by running 02_preprocessing.ipynb against the raw NIfTI data.
+# Extraction takes ~20 minutes.
+processed_dataset/
+
+# --- Model checkpoints ---
+# PyTorch .pth files (U-Net 293MB, SegFormer 164MB, FPN ~similar).
+# These are large binary files; store separately (e.g. cloud storage, DVC).
+checkpoints/
+*.pth
+
+# --- Raw array files ---
+# NumPy array dumps that may appear outside processed_dataset/ during dev.
+*.npy
+
+# --- Python cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# --- Jupyter checkpoints ---
+.ipynb_checkpoints/
+
+# --- Claude Code local settings (user-specific, not shared) ---
+.claude/settings.local.json
+
+# --- OS / editor artifacts ---
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.egg-info/
+dist/
+build/
