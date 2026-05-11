@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from typing import Dict, List, Optional, Tuple
 
 import nibabel as nib
@@ -552,7 +553,6 @@ def compute_hd95_volume(
 
         # --- Case B: GT present, prediction entirely missing ---
         if not pred_any and gt_any:
-            import warnings
             warnings.warn(
                 f"[HD95] Class {name!r}: GT has {int(gt_bin.sum())} voxels "
                 f"but prediction is completely empty (complete miss). "
@@ -565,7 +565,6 @@ def compute_hd95_volume(
 
         # --- Case C: prediction present, GT entirely empty ---
         if pred_any and not gt_any:
-            import warnings
             warnings.warn(
                 f"[HD95] Class {name!r}: prediction has {int(pred_bin.sum())} voxels "
                 f"but GT is completely empty (false-positive hallucination). "
@@ -586,7 +585,6 @@ def compute_hd95_volume(
             )
             results[key] = float(value)
         except Exception as exc:  # noqa: BLE001
-            import warnings
             warnings.warn(
                 f"[HD95] Class {name!r}: medpy raised an unexpected exception "
                 f"({type(exc).__name__}: {exc}). HD95 set to NaN.",
