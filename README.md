@@ -1,5 +1,7 @@
 # BraTS-PEDs Brain Tumour Segmentation
 
+![Tumour segmentation overlay](img/TumorSeg.png)
+
 Automated semantic segmentation of paediatric brain gliomas from multi-parametric MRI, comparing three deep learning architectures on the [BraTS-PEDs-v1](https://www.synapse.org/Synapse:syn51514105) dataset.
 
 **Course**: AI in Medicine — Politecnico di Torino, MSc (A.Y. 2025-2026)
