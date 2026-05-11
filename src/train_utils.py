@@ -38,18 +38,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from .constants import CLASS_NAMES, NUM_CLASSES, VOXEL_FREQ
 from .losses import CombinedLoss
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-NUM_CLASSES: int = 4
-CLASS_NAMES: Tuple[str, ...] = ("background", "NCR", "ED", "ET")
-
-# BraTS voxel frequencies (from EDA — full 257-subject scan)
-# Background: 99.40 %   NCR: 0.066 %   ED: 0.441 %   ET: 0.091 %
-_VOXEL_FREQ = np.array([0.9940, 0.00066, 0.00441, 0.00091], dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +106,7 @@ def get_class_weights(
     Returns:
         Float tensor of shape [NUM_CLASSES].
     """
-    freq = voxel_freq if voxel_freq is not None else _VOXEL_FREQ
+    freq = voxel_freq if voxel_freq is not None else VOXEL_FREQ
     inv  = 1.0 / (freq + 1e-8)
     w    = inv / inv.sum()
     return torch.tensor(w, dtype=torch.float32, device=device)

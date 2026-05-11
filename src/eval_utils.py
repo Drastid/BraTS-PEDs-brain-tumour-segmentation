@@ -50,15 +50,11 @@ import scipy.ndimage
 import torch
 import torch.nn as nn
 
-# ---------------------------------------------------------------------------
-# Constants (must match 03_train_unet.ipynb and src/dataset.py)
-# ---------------------------------------------------------------------------
+from .constants import CLASS_NAMES, CROP_SIZE, NUM_CLASSES, N_SLICES, ORIG_SIZE
 
-CROP_SIZE: int = 192   # center-crop used during training & evaluation
-ORIG_SIZE: int = 240   # full H and W of each 2D .npy slice
-N_SLICES: int = 155    # every BraTS-PEDs volume has exactly 155 axial slices
-NUM_CLASSES: int = 4
-CLASS_NAMES: Tuple[str, ...] = ("background", "NCR", "ED", "ET")
+# ---------------------------------------------------------------------------
+# Derived constants
+# ---------------------------------------------------------------------------
 
 # Pre-compute crop offsets once (same formula as train_utils.center_crop)
 _CROP_TOP: int = (ORIG_SIZE - CROP_SIZE) // 2    # 24

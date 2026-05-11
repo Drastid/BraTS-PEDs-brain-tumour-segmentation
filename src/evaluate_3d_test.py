@@ -41,6 +41,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from src.constants import CLASS_NAMES, NUM_CLASSES
 from src.eval_utils import (
     get_subject_ids,
     predict_volume,
@@ -48,7 +49,6 @@ from src.eval_utils import (
     compute_dice_volume,
     compute_hd95_volume,
     compute_iou_volume,
-    CLASS_NAMES,
 )
 from src.train_utils import load_checkpoint
 # NOTE: src.models.get_segformer is imported lazily inside load_segformer_model()
@@ -72,7 +72,6 @@ SEGFORMER_CHECKPOINT = os.path.join(PROJECT_ROOT, "checkpoints", "segformer", "b
 ENCODER = "resnet34"
 ENCODER_WEIGHTS = "imagenet"
 IN_CHANNELS = 4
-NUM_CLASSES = 4
 
 # Post-processing
 MIN_COMPONENT_VOXELS = 50

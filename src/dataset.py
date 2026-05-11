@@ -31,8 +31,9 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from .constants import NUM_CLASSES  # noqa: F401 — re-exported for callers
+
 MODALITIES: List[str] = ["t1c", "t1n", "t2f", "t2w"]
-NUM_CLASSES: int = 4  # 0=BG, 1=NCR, 2=ED/SNFH, 3=ET
 
 
 # ---------------------------------------------------------------------------
