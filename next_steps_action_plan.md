@@ -30,19 +30,19 @@ This document tracks the only remaining work to bring the project to **100% comp
 
 ## TASK 9 — Cross-domain zero-shot evaluation 🔴 (data-dependent)
 
-**Why:** `07_cross_domain_evaluation.ipynb` is fully written but has never been executed. Running it on an adult BraTS dataset would quantify the paediatric → adult domain shift — a meaningful generalisation experiment that strengthens any final report.
+**Why:** `notebooks/07_cross_domain_evaluation.ipynb` is fully written but has never been executed. Running it on an adult BraTS dataset would quantify the paediatric → adult domain shift — a meaningful generalisation experiment that strengthens any final report.
 
 **Blocker:** requires an adult BraTS dataset (e.g. BraTS2023-GLI, BraTS2024). Not currently in the working directory.
 
 **Plan once data is available:**
 
 1. Place the adult NIfTI files under `PKG - BraTS-2023-GLI/` (or similar).
-2. Re-run `02_preprocessing.ipynb` with `DATA_ROOT` and `OUTPUT_ROOT` pointed at the new dataset. Output goes to `processed_dataset_adult/`. (~20 min, CPU-bound — fine in `.venv`.)
-3. In `07_cross_domain_evaluation.ipynb`, set `NEW_DATASET_PATH = "processed_dataset_adult/test"`. The notebook is already built to handle different spatial dims via `infer_dataset_shape()`.
+2. Re-run `notebooks/02_preprocessing.ipynb` with `DATA_ROOT` and `OUTPUT_ROOT` pointed at the new dataset. Output goes to `processed_dataset_adult/`. (~20 min, CPU-bound — fine in `.venv`.)
+3. In `notebooks/07_cross_domain_evaluation.ipynb`, set `NEW_DATASET_PATH = "processed_dataset_adult/test"`. The notebook is already built to handle different spatial dims via `infer_dataset_shape()`.
 4. Run all cells in `.venv-3` (CUDA). Saves comparison plots + per-subject CSV under `training_outputs/`.
 5. Add a one-paragraph cross-domain section to `README.md` summarising the in-domain → cross-domain Dice/HD95 gap per model.
 
-**Acceptance:** `07_cross_domain_evaluation.ipynb` is fully executed; per-model in-domain vs cross-domain delta documented.
+**Acceptance:** `notebooks/07_cross_domain_evaluation.ipynb` is fully executed; per-model in-domain vs cross-domain delta documented.
 
 **Estimated effort:** half-day (mostly preprocessing + reading output).
 

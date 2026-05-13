@@ -77,7 +77,7 @@ BraTS-PEDs-v1/
 **Impact**: Validation set has no labels → evaluation must use held-out split from Training (80/10/10).
 
 ### Files created
-- `01_EDA.ipynb` — fully executed
+- `notebooks/01_EDA.ipynb` — fully executed
 - `EDA_01_outputs/`: `eda_slice_overview.png`, `eda_overlay.png`, `eda_intensity_distributions.png`, `eda_label_distribution.png`
 
 ---
@@ -146,7 +146,7 @@ Extraction time: **20.1 minutes**. File structure: `processed_dataset/{split}/im
 - `src/dataset.py` — `BraTSDataset`, `load_subject()`, `clip_outliers()`, `zscore_normalise()`, `get_valid_slice_indices()`
 
 ### Files created
-- `02_preprocessing.ipynb`, `split.json`, `processed_dataset/` (39,538 `.npy` pairs)
+- `notebooks/02_preprocessing.ipynb`, `split.json`, `processed_dataset/` (39,538 `.npy` pairs)
 - `processing_02_outputs/`: preprocessing QC visualizations (12 files)
 
 ---
@@ -252,7 +252,7 @@ GPU: NVIDIA GeForce RTX 3080 Laptop (8 GB VRAM). PyTorch 2.11.0+cu128, AMP enabl
 | **mean_fg_dice** | **0.8124** |
 
 ### Files created
-- `03_train_unet.ipynb`, `checkpoints/unet/{best,last}.pth`, `history.json`
+- `notebooks/03_train_unet.ipynb`, `checkpoints/unet/{best,last}.pth`, `history.json`
 - `processing_02_outputs/unet_training_curves.png`, `unet_val_predictions.png`
 
 ---
@@ -298,7 +298,7 @@ Patch embedding expanded 3→4 channels: RGB weights preserved, 4th channel = me
 | **mean_fg_dice** | **0.8396** | 0.8124 | **+0.0272** |
 
 ### Files created
-- `05_train_segformer.ipynb`, `checkpoints/segformer/{best,last}.pth`, `history.json`
+- `notebooks/05_train_segformer.ipynb`, `checkpoints/segformer/{best,last}.pth`, `history.json`
 - `processing_02_outputs/segformer_training_curves.png`, `segformer_val_predictions.png`
 
 ---
@@ -333,7 +333,7 @@ Best fg Dice: **0.7916** — much faster convergence than U-Net (0.2642) with fr
 dice_NCR=0.8474, dice_ED=0.8147, dice_ET=0.8761
 
 ### Files created
-- `06_train_fpn.ipynb`, `checkpoints/fpn/{best,last}.pth`, `history.json`
+- `notebooks/06_train_fpn.ipynb`, `checkpoints/fpn/{best,last}.pth`, `history.json`
 - `EDA_02_outputs/fpn_training_curves.png`
 ---
 
@@ -371,13 +371,13 @@ python -m src.evaluate_3d_test --model unet|fpn|segformer|all
 ```
 Supports all 3 models. Results saved as JSON in `evaluation_outputs/`.
 
-### 04_evaluation.ipynb (Val set — U-Net only)
+### notebooks/04_evaluation.ipynb (Val set — U-Net only)
 
 Ran 3D evaluation on 26 val subjects for U-Net. Mean fg Dice (3D, post-processed): **0.6293**. This was later superseded by test set evaluation.
 
 ### Files created
 - `src/eval_utils.py`, `src/evaluate_3d_test.py`
-- `04_evaluation.ipynb`, `06b_evaluation_fpn.ipynb`
+- `notebooks/04_evaluation.ipynb`, `notebooks/06b_evaluation_fpn.ipynb`
 
 ---
 
@@ -431,7 +431,7 @@ All three models evaluated on 26 test subjects with post-processing (remove_smal
 
 ## SEZIONE 12 — Three-Way Comparison (Step 7 — Completed 2026-04-30)
 
-### 08_comparison.ipynb
+### notebooks/08_comparison.ipynb
 
 Notebook di confronto three-way U-Net vs FPN vs SegFormer:
 - Tabella riassuntiva quantitativa (Dice + HD95 per classe)
@@ -444,7 +444,7 @@ Notebook di confronto three-way U-Net vs FPN vs SegFormer:
 - Training convergence comparison (loss + fg Dice curves)
 
 ### Files created
-- `08_comparison.ipynb`
+- `notebooks/08_comparison.ipynb`
 - `comparison_outputs/summary_comparison.csv`
 - `comparison_outputs/per_subject_fg_dice_all_models.csv`
 - `comparison_outputs/`: `dice_comparison_bar.png`, `dice_boxplot_per_class.png`, `hd95_comparison_bar.png`, `fg_dice_scatter.png`, `convergence_comparison.png`
@@ -457,7 +457,7 @@ Notebook di confronto three-way U-Net vs FPN vs SegFormer:
 
 Phase 7 evaluates model robustness under domain shift — zero-shot (no retraining) on adult BraTS datasets.
 
-### 07_cross_domain_evaluation.ipynb
+### notebooks/07_cross_domain_evaluation.ipynb
 
 Self-contained pipeline with `NEW_DATASET_PATH` placeholder. Features:
 - `evaluate_split()` helper — generic 3D eval for any preprocessed split
@@ -466,8 +466,8 @@ Self-contained pipeline with `NEW_DATASET_PATH` placeholder. Features:
 - Distribution box-plots, failure analysis
 
 ### How to use
-1. Preprocess new dataset with `02_preprocessing.ipynb` (set `DATA_ROOT`, `OUTPUT_ROOT`)
-2. In `07_cross_domain_evaluation.ipynb`, set `NEW_DATASET_PATH`
+1. Preprocess new dataset with `notebooks/02_preprocessing.ipynb` (set `DATA_ROOT`, `OUTPUT_ROOT`)
+2. In `notebooks/07_cross_domain_evaluation.ipynb`, set `NEW_DATASET_PATH`
 3. Run all cells
 
 ### Status
@@ -530,9 +530,9 @@ Self-contained pipeline with `NEW_DATASET_PATH` placeholder. Features:
 | 2026-04-22 | Step 2-3: EDA, preprocessing, dataset class, split |
 | 2026-04-23 | Step 4: Training infra (losses, train_utils), U-Net training + results |
 | 2026-04-23 | Step 6a: eval_utils (3D reconstruction, post-processing, HD95) |
-| 2026-04-25 | Step 6b: 04_evaluation.ipynb (3D val eval for U-Net) |
+| 2026-04-25 | Step 6b: notebooks/04_evaluation.ipynb (3D val eval for U-Net) |
 | 2026-04-25 | Step 5a: SegFormer implementation (models.py) + training |
-| 2026-04-25 | Phase 7: Cross-domain refactoring + 07_cross_domain_evaluation.ipynb |
+| 2026-04-25 | Phase 7: Cross-domain refactoring + notebooks/07_cross_domain_evaluation.ipynb |
 | 2026-04-30 | Step 5b: FPN training + 3D evaluation |
-| 2026-04-30 | Step 7: 08_comparison.ipynb (three-way) |
+| 2026-04-30 | Step 7: notebooks/08_comparison.ipynb (three-way) |
 | 2026-04-30 | **Riorganizzazione context.md**: struttura logica, tabelle TBD compilate, sezione riepilogativa finale |

@@ -36,7 +36,7 @@ python -m src.evaluate_3d_test --model all          # all three
 python -m src.evaluate_3d_test --model unet         # one only: unet|fpn|segformer
 ```
 
-Notebook execution order (only if regenerating outputs from scratch):
+All notebooks live in `notebooks/`. Execution order (only if regenerating outputs from scratch):
 `01_EDA` → `02_preprocessing` (~20 min, prereq for training) → `03_train_unet` → `04_evaluation` → `05_train_segformer` → `06_train_fpn` → `06b_evaluation_fpn` → `08_comparison`. (`07_cross_domain` is template-only, awaiting adult BraTS data.)
 
 ---

@@ -38,12 +38,12 @@
 
 | Notebook | Stato | Output Confermati |
 |---|---|---|
-| [01_EDA.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/01_EDA.ipynb) | ✅ Eseguito | 4 plot in `EDA_01_outputs/` |
-| [02_preprocessing.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/02_preprocessing.ipynb) | ✅ Eseguito | `processed_dataset/` (39.538 slice), `split.json` |
-| [03_train_unet.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/03_train_unet.ipynb) | ✅ Eseguito | `checkpoints/unet/best.pth`, training curves |
-| [04_evaluation.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/04_evaluation.ipynb) | ✅ Eseguito | 3D Dice + HD95 su **val set**, failure analysis |
-| [05_train_segformer.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/05_train_segformer.ipynb) | ✅ Eseguito | `checkpoints/segformer/best.pth`, training curves |
-| [07_cross_domain_evaluation.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/07_cross_domain_evaluation.ipynb) | 🔶 Creato, non eseguito | Placeholder, nessun output |
+| [01_EDA.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/notebooks/01_EDA.ipynb) | ✅ Eseguito | 4 plot in `EDA_01_outputs/` |
+| [02_preprocessing.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/notebooks/02_preprocessing.ipynb) | ✅ Eseguito | `processed_dataset/` (39.538 slice), `split.json` |
+| [03_train_unet.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/notebooks/03_train_unet.ipynb) | ✅ Eseguito | `checkpoints/unet/best.pth`, training curves |
+| [04_evaluation.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/notebooks/04_evaluation.ipynb) | ✅ Eseguito | 3D Dice + HD95 su **val set**, failure analysis |
+| [05_train_segformer.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/notebooks/05_train_segformer.ipynb) | ✅ Eseguito | `checkpoints/segformer/best.pth`, training curves |
+| [07_cross_domain_evaluation.ipynb](file:///c:/Users/lrnzp/OneDrive/Desktop/POLITO/MAGISTRALE/Secondo%20Anno/Primo%20Semestre/AI%20in%20Medicine/Project/notebooks/07_cross_domain_evaluation.ipynb) | 🔶 Creato, non eseguito | Placeholder, nessun output |
 
 ### 2.3 Artefatti e Checkpoint
 
@@ -149,12 +149,12 @@ La valutazione 3D è stata eseguita solo sul validation set. È necessario riese
 
 **Scelta: Opzione A** — Implementato FPN come da specifica + mantenuto SegFormer come confronto aggiuntivo.
 
-- [x] Creato `06_train_fpn.ipynb` con `smp.FPN(encoder_name='resnet34', ...)`
+- [x] Creato `notebooks/06_train_fpn.ipynb` con `smp.FPN(encoder_name='resnet34', ...)`
 - [x] Addestrato con gli stessi iperparametri di U-Net (30 epochs, two-phase)
 - [x] Best val fg Dice: **0.8461** (epoch 15) — supera U-Net (0.8385)
 - [x] 3D test fg Dice: **0.6213** — supera U-Net (0.6164), sotto SegFormer (0.6760)
 - [x] Aggiornato `src/evaluate_3d_test.py` con supporto FPN
-- [x] Creato `06b_evaluation_fpn.ipynb` per valutazione 3D
+- [x] Creato `notebooks/06b_evaluation_fpn.ipynb` per valutazione 3D
 - [x] Risultati salvati in `evaluation_outputs/test_3d_metrics_fpn.json`
 
 #### 5.3 Aggiornare `requirements.txt` ✅ FATTO
@@ -174,7 +174,7 @@ La valutazione 3D è stata eseguita solo sul validation set. È necessario riese
 
 #### 5.4 Creare il notebook di confronto finale ✅ FATTO (2026-04-30)
 
-Creato `08_comparison.ipynb` — confronto three-way U-Net vs FPN vs SegFormer:
+Creato `notebooks/08_comparison.ipynb` — confronto three-way U-Net vs FPN vs SegFormer:
 
 - [x] Tabella riassuntiva quantitativa: Dice e HD95 per classe per tutti e 3 i modelli
 - [x] Bar chart comparativo Dice per classe
@@ -189,8 +189,8 @@ Creato `08_comparison.ipynb` — confronto three-way U-Net vs FPN vs SegFormer:
 #### 5.5 Valutazione cross-domain (se si dispone di un dataset adulto BraTS)
 
 - [ ] Procurarsi un dataset BraTS adulto (es. BraTS2023-GLI)
-- [ ] Preprocessarlo con la stessa pipeline (`02_preprocessing.ipynb`)
-- [ ] Eseguire `07_cross_domain_evaluation.ipynb` impostando `NEW_DATASET_PATH`
+- [ ] Preprocessarlo con la stessa pipeline (`notebooks/02_preprocessing.ipynb`)
+- [ ] Eseguire `notebooks/07_cross_domain_evaluation.ipynb` impostando `NEW_DATASET_PATH`
 - [ ] Documentare il domain shift nelle performance
 
 #### 5.6 Ricostruzione 3D e visualizzazione NIfTI

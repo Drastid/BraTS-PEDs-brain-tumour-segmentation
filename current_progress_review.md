@@ -83,11 +83,11 @@ The project is now in a **fully shippable state — ~99% complete**. Every task 
 
 | Directory | Contents |
 |---|---|
-| `EDA_01_outputs/` | 4 EDA plots from `01_EDA.ipynb` |
+| `EDA_01_outputs/` | 4 EDA plots from `notebooks/01_EDA.ipynb` |
 | `processing_02_outputs/` | 5 `preproc_*.png` only (preprocessing QC) |
 | `training_outputs/` | 8 PNGs (training curves, val predictions, failure analysis) |
 | `evaluation_outputs/` | 3 JSON test-metric files + `nifti_predictions/` (6 `.nii.gz` + README) |
-| `comparison_outputs/` | 5 PNG + 2 CSV from `08_comparison.ipynb` |
+| `comparison_outputs/` | 5 PNG + 2 CSV from `notebooks/08_comparison.ipynb` |
 | ~~`EDA_02_outputs/`~~ | **deleted** |
 
 ### 2.12 Documentation
@@ -124,13 +124,13 @@ The project is now in a **fully shippable state — ~99% complete**. Every task 
 Everything from the prior 🔴/🟡 list is now done. The remaining items are either external blockers or genuinely optional polish.
 
 ### 4.1 🔴 Blocker (data-dependent)
-- **TASK 9 — Cross-domain zero-shot evaluation.** `07_cross_domain_evaluation.ipynb` is structured and unblocked code-wise (notebook source now points at `training_outputs/` and handles arbitrary spatial dims via `infer_dataset_shape`). Execution remains blocked until an adult BraTS dataset (e.g. BraTS2023-GLI) lands under `PKG - BraTS-2023-GLI/`.
+- **TASK 9 — Cross-domain zero-shot evaluation.** `notebooks/07_cross_domain_evaluation.ipynb` is structured and unblocked code-wise (notebook source now points at `training_outputs/` and handles arbitrary spatial dims via `infer_dataset_shape`). Execution remains blocked until an adult BraTS dataset (e.g. BraTS2023-GLI) lands under `PKG - BraTS-2023-GLI/`.
 
 ### 4.2 🟢 Optional polish
 - **Update `CLAUDE.md` §8.** Current text still claims IoU / `import warnings` / constants centralisation are the "highest priority remaining". They are not — they're done. (Will be fixed in the same commit as this review.)
 - **Update `project_review.md`** date header — it's the 2026-04-29 audit; everything 🔴 in it is already resolved. Leave the file as a historical record, but add a one-line "Status: superseded by 2026-05-11 reviews" at the top.
 - **Consider deleting `.venv-1` and `.venv-2`.** They have CUDA torch but no `transformers`/`accelerate`, so they can't run SegFormer. They're effectively dead. **Do not delete `.venv-3` or `.venv-4`** — those are the active CUDA environments used for the GPU runs in TASK 5 / 6 (per memory `project_venvs.md`).
-- **`07_cross_domain_evaluation.ipynb` stale outputs cleanup.** The notebook source now writes to `training_outputs/`, but its old cell outputs still mention `EDA_02_outputs/`. They'll auto-clear on the next execution; no action needed unless someone reads the stale outputs and gets confused.
+- **`notebooks/07_cross_domain_evaluation.ipynb` stale outputs cleanup.** The notebook source now writes to `training_outputs/`, but its old cell outputs still mention `EDA_02_outputs/`. They'll auto-clear on the next execution; no action needed unless someone reads the stale outputs and gets confused.
 
 ### 4.3 ❌ Items not worth doing
 - Renaming `processing_02_outputs/` → `preprocessing_outputs/` — adds churn across 5 preprocessing-related sources, low benefit.

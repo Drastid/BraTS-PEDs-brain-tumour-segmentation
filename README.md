@@ -132,7 +132,7 @@ pip install -r requirements.txt
 The raw NIfTI dataset and the preprocessed `.npy` slices are **not included** in this repository (too large). To reproduce:
 
 1. Download **BraTS-PEDs-v1** from the [BraTS challenge portal](https://www.synapse.org/Synapse:syn51514105) and place it in `PKG - BraTS-PEDs-v1/`
-2. Run `02_preprocessing.ipynb` — this extracts 39,538 axial slice pairs into `processed_dataset/` (~20 minutes)
+2. Run `notebooks/02_preprocessing.ipynb` — this extracts 39,538 axial slice pairs into `processed_dataset/` (~20 minutes)
 
 ---
 
@@ -143,11 +143,11 @@ The raw NIfTI dataset and the preprocessed `.npy` slices are **not included** in
 Run notebooks in order:
 
 ```
-01_EDA.ipynb              → Exploratory data analysis
-02_preprocessing.ipynb    → 3D→2D extraction + train/val/test split
-03_train_unet.ipynb       → U-Net/ResNet34
-05_train_segformer.ipynb  → SegFormer-B1
-06_train_fpn.ipynb        → FPN/ResNet34
+notebooks/01_EDA.ipynb              → Exploratory data analysis
+notebooks/02_preprocessing.ipynb    → 3D→2D extraction + train/val/test split
+notebooks/03_train_unet.ipynb       → U-Net/ResNet34
+notebooks/05_train_segformer.ipynb  → SegFormer-B1
+notebooks/06_train_fpn.ipynb        → FPN/ResNet34
 ```
 
 ### 3D Evaluation on Test Set
@@ -166,7 +166,7 @@ Results are saved as JSON in `evaluation_outputs/`.
 
 ### Comparison
 
-Run `08_comparison.ipynb` for the three-way quantitative and visual comparison (Dice tables, HD95 bar charts, box-plots, failure analysis, convergence curves).
+Run `notebooks/08_comparison.ipynb` for the three-way quantitative and visual comparison (Dice tables, HD95 bar charts, box-plots, failure analysis, convergence curves).
 
 ---
 
@@ -181,19 +181,19 @@ Run `08_comparison.ipynb` for the three-way quantitative and visual comparison (
 │   ├── eval_utils.py           # 3D reconstruction, HD95, post-processing
 │   ├── models.py               # SegFormerWrapper (4-channel adaptation)
 │   └── evaluate_3d_test.py     # CLI evaluation script
-├── 01_EDA.ipynb
-├── 02_preprocessing.ipynb
-├── 03_train_unet.ipynb
-├── 04_evaluation.ipynb
-├── 05_train_segformer.ipynb
-├── 06_train_fpn.ipynb
-├── 06b_evaluation_fpn.ipynb
-├── 07_cross_domain_evaluation.ipynb   # Template — requires adult BraTS data
-├── 08_comparison.ipynb
+├── notebooks/
+│   ├── 01_EDA.ipynb
+│   ├── 02_preprocessing.ipynb
+│   ├── 03_train_unet.ipynb
+│   ├── 04_evaluation.ipynb
+│   ├── 05_train_segformer.ipynb
+│   ├── 06_train_fpn.ipynb
+│   ├── 06b_evaluation_fpn.ipynb
+│   ├── 07_cross_domain_evaluation.ipynb   # Template — requires adult BraTS data
+│   └── 08_comparison.ipynb
 ├── split.json                  # Reproducible subject assignment (SEED=42)
 ├── requirements.txt
 ├── EDA_01_outputs/             # EDA plots
-├── EDA_02_outputs/             # FPN training curves
 ├── processing_02_outputs/      # Preprocessing QC + training curves
 ├── evaluation_outputs/         # 3D test metrics (JSON)
 └── comparison_outputs/         # Comparison plots and CSVs

@@ -20,7 +20,7 @@ PKG - BraTS-PEDs-v1/
 
 # --- Preprocessed dataset ---
 # 39,538 extracted 2D slice pairs (.npy, ~20GB total).
-# Regenerate by running 02_preprocessing.ipynb against the raw NIfTI data.
+# Regenerate by running notebooks/02_preprocessing.ipynb against the raw NIfTI data.
 # Extraction takes ~20 minutes.
 processed_dataset/
 
