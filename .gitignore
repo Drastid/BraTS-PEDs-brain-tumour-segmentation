@@ -34,6 +34,12 @@ checkpoints/
 # NumPy array dumps that may appear outside processed_dataset/ during dev.
 *.npy
 
+# --- Markdown docs (keep README.md only) ---
+# Internal logbooks/plans/reviews (context.md, current_progress_review.md,
+# next_steps_action_plan.md, project_review.md, CLAUDE.md, etc.) stay local.
+*.md
+!README.md
+
 # --- Python cache ---
 __pycache__/
 *.py[cod]
