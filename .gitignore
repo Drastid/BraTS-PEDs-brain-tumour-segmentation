@@ -35,8 +35,7 @@ checkpoints/
 *.npy
 
 # --- Markdown docs (keep README.md only) ---
-# Internal logbooks/plans/reviews (context.md, current_progress_review.md,
-# next_steps_action_plan.md, project_review.md, CLAUDE.md, etc.) stay local.
+# Internal notes, logbooks, plans and reviews stay local; only README.md is tracked.
 *.md
 !README.md
 
@@ -48,9 +47,6 @@ __pycache__/
 
 # --- Jupyter checkpoints ---
 .ipynb_checkpoints/
-
-# --- Claude Code local settings (user-specific, not shared) ---
-.claude/settings.local.json
 
 # --- OS / editor artifacts ---
 .DS_Store
