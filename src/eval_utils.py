@@ -50,15 +50,23 @@ import scipy.ndimage
 import torch
 import torch.nn as nn
 
-from .constants import CLASS_NAMES, CROP_SIZE, NUM_CLASSES, N_SLICES, ORIG_SIZE
+from .constants import (
+    CLASS_NAMES,
+    CROP_SIZE,
+    NUM_CLASSES,
+    N_SLICES,
+    ORIG_SIZE,
+    compute_crop_offsets,
+)
 
 # ---------------------------------------------------------------------------
 # Derived constants
 # ---------------------------------------------------------------------------
 
-# Pre-compute crop offsets once (same formula as train_utils.center_crop)
-_CROP_TOP: int = (ORIG_SIZE - CROP_SIZE) // 2    # 24
-_CROP_LEFT: int = (ORIG_SIZE - CROP_SIZE) // 2   # 24
+# Crop offsets for the BraTS-PEDs defaults, via the shared single-source helper
+# (same formula used by train_utils.center_crop). For arbitrary dimensions call
+# compute_crop_offsets(orig_size, crop_size) directly (see predict_volume).
+_CROP_TOP, _CROP_LEFT = compute_crop_offsets(ORIG_SIZE, CROP_SIZE)   # (24, 24)
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +214,13 @@ def predict_volume(
     ``orig_size × orig_size`` spatial canvas.  The per-slice predictions are
     stacked in the original axial order (axis 2) to form the 3D output.
 
+    **Symmetric GT cropping (review.md §7.1)**: the ground-truth volume is cropped
+    to the *same* center window as the prediction. The model only sees the cropped
+    region, so the area outside it is background-zero in *both* volumes. This avoids
+    counting GT tumour voxels outside the crop as automatic false negatives, which
+    would silently penalise Dice/HD95. Both returned volumes therefore carry signal
+    only within ``[top:top+crop, left:left+crop]``.
+
     Axial slices that were discarded during preprocessing (brain coverage < 1 %)
     are kept at their background-zero default — in practice this dataset has
     no filtered-out slices (all 155 slices pass the 1 % threshold).
@@ -233,8 +248,9 @@ def predict_volume(
         pred_vol : np.ndarray shape ``[orig_size, orig_size, n_slices]`` int8.
                    Predicted class labels {0, 1, 2, 3}.
         gt_vol   : np.ndarray shape ``[orig_size, orig_size, n_slices]`` int8.
-                   Ground-truth class labels loaded from pre-processed ``.npy``
-                   mask files.
+                   Ground-truth class labels from the pre-processed ``.npy`` mask
+                   files, cropped to the same center window as ``pred_vol`` (see
+                   the symmetric-cropping note above).
 
     Raises:
         FileNotFoundError: If no slice files are found for ``subject_id``.
@@ -261,9 +277,10 @@ def predict_volume(
         if n_slices is None:
             n_slices = _detected_n
 
-    # Pre-compute center-crop offsets (same formula as train_utils.center_crop)
-    top  = (orig_size - crop_size) // 2
-    left = (orig_size - crop_size) // 2
+    # Center-crop offsets via the shared single-source helper (review.md §7.2):
+    # identical to train_utils.center_crop, so training and inference can never
+    # silently disagree on the crop position.
+    top, left = compute_crop_offsets(orig_size, crop_size)
 
     # Allocate volumes: unvisited slices default to background (label 0)
     pred_vol = np.zeros((orig_size, orig_size, n_slices), dtype=np.int8)
@@ -285,11 +302,17 @@ def predict_volume(
         logits     = model(img_tensor)                                     # [1,4,192,192]
         pred_crop  = logits.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.int8)
 
-        # Un-crop: write prediction into the center region of the 240×240 canvas
+        # Un-crop prediction into the center region of the orig_size canvas.
         pred_vol[top:top + crop_size, left:left + crop_size, sl_idx] = pred_crop
 
-        # Ground-truth: store the full 240×240 mask
-        gt_vol[:, :, sl_idx] = msk
+        # Ground-truth: store ONLY the matching center region (review.md §7.1).
+        # The model only ever sees — and can only predict — the cropped window,
+        # so comparing against the full-resolution mask would count every GT
+        # tumour voxel outside the crop as an automatic false negative, silently
+        # penalising Dice/HD95. Cropping the GT symmetrically makes the metric
+        # measure what the model was actually asked to segment.
+        msk_crop = msk[top:top + crop_size, left:left + crop_size]
+        gt_vol[top:top + crop_size, left:left + crop_size, sl_idx] = msk_crop
 
     return pred_vol, gt_vol
 

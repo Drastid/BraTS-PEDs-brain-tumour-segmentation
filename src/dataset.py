@@ -28,10 +28,11 @@ from typing import Callable, List, Optional, Tuple
 
 import nibabel as nib
 import numpy as np
+import scipy.ndimage
 import torch
 from torch.utils.data import Dataset
 
-from .constants import NUM_CLASSES  # noqa: F401 — re-exported for callers
+from .constants import NUM_CLASSES
 
 MODALITIES: List[str] = ["t1c", "t1n", "t2f", "t2w"]
 
@@ -107,6 +108,75 @@ def count_outlier_voxels(
 
 
 # ---------------------------------------------------------------------------
+# Distance Transform Map for the Generalized Surface Loss (Celaya et al.)
+# ---------------------------------------------------------------------------
+
+
+def compute_signed_dtm(
+    mask_2d: np.ndarray,
+    num_classes: int = NUM_CLASSES,
+) -> np.ndarray:
+    """Per-class SIGNED Distance Transform Map of a 2D label mask (paper Fig. 2).
+
+    For each class ``k`` the binary mask is converted to a signed Euclidean
+    distance field ``D^k`` with the sign convention required by the Generalized
+    Surface Loss:
+
+        * **positive** outside the object,
+        * **zero** on the boundary,
+        * **negative** inside the object.
+
+    Concretely, for the binary mask ``B`` of class ``k``::
+
+        D = edt(~B)  -  edt(B)
+
+    where ``edt`` is the Euclidean distance transform. ``edt(~B)`` gives the
+    (positive) distance from each exterior voxel to the nearest object voxel;
+    subtracting ``edt(B)`` makes the interior negative. Boundary voxels are 0 in
+    both terms.
+
+    Degenerate classes (absent in this slice) yield an all-zero ``D^k``: the EDT
+    of an all-False mask is 0 everywhere, and ``~B`` is all-True whose EDT is
+    also 0 (no zero-seed to measure distance to). An all-zero ``D^k`` makes that
+    class contribute nothing to the GSL numerator and denominator — the correct
+    behaviour (no surface to penalise).
+
+    This is intended to be pre-computed OFFLINE per slice and stored alongside
+    the image/mask ``.npy`` files (see ``scripts/precompute_gsl_stats.py``),
+    avoiding the costly per-epoch DTM recomputation of the Hausdorff Loss
+    (paper §1.1.2).
+
+    Args:
+        mask_2d:     Integer label array ``[H, W]`` with values in
+                     ``{0, ..., num_classes-1}``.
+        num_classes: Number of segmentation classes ``C``.
+
+    Returns:
+        Float32 array ``[C, H, W]`` — the signed DTM stacked per class.
+    """
+    edt = scipy.ndimage.distance_transform_edt
+    h, w = mask_2d.shape
+    dtm = np.zeros((num_classes, h, w), dtype=np.float32)
+
+    for k in range(num_classes):
+        binary = mask_2d == k
+        if not binary.any():
+            # Class absent in this slice → all-zero DTM (contributes nothing).
+            continue
+        if binary.all():
+            # Class fills the whole slice (degenerate); no exterior → interior
+            # distance only, kept negative for sign consistency.
+            inside = edt(binary).astype(np.float32)
+            dtm[k] = -inside
+            continue
+        outside = edt(~binary).astype(np.float32)   # >0 outside, 0 inside/boundary
+        inside = edt(binary).astype(np.float32)     # >0 inside,  0 outside/boundary
+        dtm[k] = outside - inside                   # +outside / -inside / 0 boundary
+
+    return dtm
+
+
+# ---------------------------------------------------------------------------
 # Subject-level I/O
 # ---------------------------------------------------------------------------
 
@@ -178,6 +248,45 @@ def get_valid_slice_indices(
 
 
 # ---------------------------------------------------------------------------
+# Augmentation output normalisation (review.md §3.1)
+# ---------------------------------------------------------------------------
+
+
+def _to_chw_image(image) -> torch.Tensor:
+    """Normalise an augmented image to a float32 CHW tensor [4, H, W].
+
+    Handles both shapes albumentations can return:
+      - ``np.ndarray`` in HWC layout (geometric-only Compose) → transpose to CHW.
+      - ``torch.Tensor`` already in CHW layout (Compose ending in ToTensorV2).
+
+    Args:
+        image: Augmented image (NumPy HWC array or torch CHW tensor).
+
+    Returns:
+        Contiguous float32 tensor of shape [C, H, W].
+    """
+    if isinstance(image, torch.Tensor):
+        return image.contiguous().float()
+    # NumPy HWC → CHW
+    chw = np.transpose(image, (2, 0, 1))
+    return torch.from_numpy(np.ascontiguousarray(chw)).float()
+
+
+def _to_mask(mask) -> torch.Tensor:
+    """Normalise an augmented mask to a long tensor [H, W] of class indices.
+
+    Args:
+        mask: Augmented mask (NumPy [H, W] array or torch tensor).
+
+    Returns:
+        Contiguous int64 tensor of shape [H, W].
+    """
+    if isinstance(mask, torch.Tensor):
+        return mask.contiguous().long()
+    return torch.from_numpy(np.ascontiguousarray(mask)).long()
+
+
+# ---------------------------------------------------------------------------
 # PyTorch Dataset
 # ---------------------------------------------------------------------------
 
@@ -199,25 +308,47 @@ class BraTSDataset(Dataset):
             masks/   <subject_id>_slice<idx>.npy   [H, W]     int8
 
     Args:
-        data_dir:  Path to the split directory (e.g. ``processed_dataset/train``).
-        augment:   Optional albumentations Compose transform.
-                   Must accept ``image`` (H,W,C float32) and
-                   ``mask`` (H,W int8) keyword arguments.
+        data_dir:   Path to the split directory (e.g. ``processed_dataset/train``).
+        augment:    Optional albumentations Compose transform.
+                    Must accept ``image`` (H,W,C float32) and
+                    ``mask`` (H,W int8) keyword arguments. When ``return_dtm`` is
+                    True the transform must also accept a ``dtm`` additional
+                    target of type ``image`` (see ``get_augmentation``).
+        return_dtm: If True, also load and return the per-class signed Distance
+                    Transform Map for the Generalized Surface Loss. Requires the
+                    DTMs to have been pre-computed (see
+                    ``scripts/precompute_gsl_stats.py``). ``__getitem__`` then
+                    returns a 3-tuple ``(image, mask, dtm)``; otherwise it
+                    returns the original 2-tuple ``(image, mask)`` for backward
+                    compatibility.
+        dtm_dir:    Override for the DTM directory. Defaults to
+                    ``<data_dir>/dtms``.
     """
 
     def __init__(
         self,
         data_dir: str,
         augment: Optional[Callable] = None,
+        return_dtm: bool = False,
+        dtm_dir: Optional[str] = None,
     ) -> None:
         self.img_dir = os.path.join(data_dir, "images")
         self.msk_dir = os.path.join(data_dir, "masks")
         self.augment = augment
+        self.return_dtm = return_dtm
+        self.dtm_dir = dtm_dir if dtm_dir is not None else os.path.join(data_dir, "dtms")
 
         if not os.path.isdir(self.img_dir):
             raise FileNotFoundError(
                 f"Images directory not found: {self.img_dir}\n"
                 "Run extract_split() in 02_preprocessing.ipynb first."
+            )
+
+        if self.return_dtm and not os.path.isdir(self.dtm_dir):
+            raise FileNotFoundError(
+                f"DTM directory not found: {self.dtm_dir}\n"
+                "Run `python -m scripts.precompute_gsl_stats` first to generate "
+                "the per-slice Distance Transform Maps required by the GSL."
             )
 
         self.files: List[str] = sorted(
@@ -229,19 +360,47 @@ class BraTSDataset(Dataset):
     def __len__(self) -> int:
         return len(self.files)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int):
         fname = self.files[idx]
-        # Both reads are fast O(1) mmap-backed disk reads on pre-processed arrays.
+        # Each read loads a small pre-processed slice array into RAM (fast: the
+        # heavy NIfTI decoding happened once, offline, during preprocessing).
         img: np.ndarray = np.load(os.path.join(self.img_dir, fname))  # [4, H, W] float32
         msk: np.ndarray = np.load(os.path.join(self.msk_dir, fname))  # [H, W]    int8
 
-        if self.augment is not None:
-            img_hwc = img.transpose(1, 2, 0)          # [H, W, 4]
-            result  = self.augment(image=img_hwc, mask=msk)
-            img     = result["image"].transpose(2, 0, 1)  # [4, H, W]
-            msk     = result["mask"]
+        dtm: Optional[np.ndarray] = None
+        if self.return_dtm:
+            dtm = np.load(os.path.join(self.dtm_dir, fname))          # [C, H, W] float32
 
-        return (
-            torch.from_numpy(np.ascontiguousarray(img)),
-            torch.from_numpy(np.ascontiguousarray(msk)).long(),
-        )
+        if self.augment is not None:
+            # albumentations expects channels-last (H, W, C) for the image.
+            img_hwc = np.transpose(img, (1, 2, 0))    # [H, W, 4]
+            if dtm is not None:
+                # The DTM is passed as an additional image-type target so it
+                # undergoes the SAME spatial transform as image/mask, keeping it
+                # aligned with the augmented mask. The DTM-aware augmentation
+                # pipeline (get_augmentation(with_dtm=True)) is restricted to
+                # rigid isometries (flip / rot90), under which the transformed
+                # DTM remains an EXACT distance map — no interpolation, so the
+                # GSL gradient is not polluted.
+                dtm_hwc = np.transpose(dtm, (1, 2, 0))   # [H, W, C]
+                result = self.augment(image=img_hwc, mask=msk, dtm=dtm_hwc)
+                dtm = result["dtm"]
+            else:
+                result = self.augment(image=img_hwc, mask=msk)
+            # The output type depends on the pipeline (review.md §3.1):
+            #   - geometric-only Compose → NumPy arrays (current default)
+            #   - Compose ending in ToTensorV2 → torch tensors (already CHW img)
+            # _to_chw_image / _to_mask normalise both cases to a stable contract.
+            img = result["image"]
+            msk = result["mask"]
+            if dtm is not None:
+                return _to_chw_image(img), _to_mask(msk), _to_chw_image(dtm)
+            return _to_chw_image(img), _to_mask(msk)
+
+        # No augmentation: img is already [4, H, W], msk is [H, W].
+        img_t = torch.from_numpy(np.ascontiguousarray(img)).float()
+        msk_t = torch.from_numpy(np.ascontiguousarray(msk)).long()
+        if dtm is not None:
+            dtm_t = torch.from_numpy(np.ascontiguousarray(dtm)).float()
+            return img_t, msk_t, dtm_t
+        return img_t, msk_t
