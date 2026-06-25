@@ -160,7 +160,12 @@ def build_optim_sched(model, cfg, phase: int):
     else:
         set_encoder_trainable(model, True)
         enc = list(model.encoder.parameters())
-        dec = [p for n, p in model.named_parameters() if not n.startswith("encoder.")]
+        # Escludi i parametri encoder per IDENTITA' (non per prefisso nome): il
+        # wrapper SegFormer espone i param sotto "model.*", quindi un filtro per
+        # nome duplicherebbe il backbone tra i due gruppi e AdamW andrebbe in
+        # errore. Per id funziona anche per i modelli SMP (Unet/FPN) invariati.
+        enc_ids = {id(p) for p in enc}
+        dec = [p for p in model.parameters() if id(p) not in enc_ids]
         opt = torch.optim.AdamW(
             [{"params": enc, "lr": cfg.lr_phase2 * cfg.encoder_lr_mult},
              {"params": dec, "lr": cfg.lr_phase2}],

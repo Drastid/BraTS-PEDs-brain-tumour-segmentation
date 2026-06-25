@@ -18,7 +18,12 @@ torchvision
 segmentation-models-pytorch
 
 # Transformers (SegFormer)
-transformers
+# Range (not a hard pin): 5.x restructured the SegFormer internals partway
+# through the series — old (<= ~5.6: segformer.encoder.patch_embeddings[i]) vs
+# new (segformer.stages[i].patch_embeddings). src/models.py handles BOTH, so any
+# 5.x works (5.6.2 locally, 5.12.1 on Colab). <6 guards against a future 6.x
+# that might restructure again.
+transformers>=5,<6
 accelerate
 
 # Data augmentation
