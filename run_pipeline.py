@@ -266,26 +266,28 @@ def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
         num_classes=cfg.num_classes,
         dice_weight=cfg.dice_weight, focal_weight=cfg.focal_weight,
         gamma=cfg.focal_gamma, ignore_background=cfg.ignore_background,
-        class_weights=get_class_weights(device=device),
+        class_weights=_train_class_weights(data_root, device, cfg.num_classes),
     ).to(device)
 
     train_loader, val_loader = make_loaders(cfg, data_root, return_dtm=False)
 
-    best_fg, best_metrics, g = -1.0, {}, 0
+    best_fg, best_metrics, g, history = -1.0, {}, 0, []
     for phase, n_ep in [(1, cfg.phase1_epochs), (2, cfg.phase2_epochs)]:
         opt, sched = build_optim_sched(model, cfg, phase)
         for e in range(n_ep):
-            train_one_epoch(model, train_loader, criterion, opt, device,
-                            crop_size=cfg.crop_size, scaler=scaler, amp_dtype=amp_dtype)
+            tr = train_one_epoch(model, train_loader, criterion, opt, device,
+                                 crop_size=cfg.crop_size, scaler=scaler, amp_dtype=amp_dtype)
             va = evaluate(model, val_loader, criterion, device, crop_size=cfg.crop_size)
             sched.step()
             fg = (va["dice_NCR"] + va["dice_ED"] + va["dice_ET"]) / 3.0
+            history.append(_history_row(g, phase, tr, va, fg))
             print(f"  [P{phase} ep {e+1}/{n_ep}] {format_metrics(va, 'val')}  fg_dice={fg:.4f}")
             if fg > best_fg:
                 best_fg, best_metrics = fg, va
                 save_checkpoint(os.path.join(ckpt_dir, "best.pth"), model, opt, sched, g, va)
             save_checkpoint(os.path.join(ckpt_dir, "last.pth"), model, opt, sched, g, va)
             g += 1
+    _save_history(ckpt_dir, history)
 
     _report_vram(device)
     print(f"  → best FG Dice ({arch}): {best_fg:.4f}")
@@ -320,16 +322,17 @@ def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
 
     train_loader, val_loader = make_loaders(cfg, data_root, return_dtm=True)
 
-    best_fg, best_metrics, g = -1.0, {}, 0
+    best_fg, best_metrics, g, history = -1.0, {}, 0, []
     for phase, n_ep in [(1, cfg.phase1_epochs), (2, cfg.phase2_epochs)]:
         opt, sched = build_optim_sched(model, cfg, phase)
         for e in range(n_ep):
-            train_one_epoch_gsl(model, train_loader, criterion, opt, device,
-                                epoch=g, crop_size=cfg.crop_size,
-                                scaler=scaler, amp_dtype=amp_dtype)
+            tr = train_one_epoch_gsl(model, train_loader, criterion, opt, device,
+                                     epoch=g, crop_size=cfg.crop_size,
+                                     scaler=scaler, amp_dtype=amp_dtype)
             va = evaluate_gsl(model, val_loader, criterion, device, crop_size=cfg.crop_size)
             sched.step()
             fg = (va["dice_NCR"] + va["dice_ED"] + va["dice_ET"]) / 3.0
+            history.append(_history_row(g, phase, tr, va, fg))
             print(f"  [P{phase} ep {e+1}/{n_ep}] alpha={va.get('alpha', float('nan')):.2f}  "
                   f"{format_metrics(va, 'val')}  fg_dice={fg:.4f}")
             if fg > best_fg:
@@ -337,6 +340,7 @@ def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
                 save_checkpoint(os.path.join(ckpt_dir, "best.pth"), model, opt, sched, g, va)
             save_checkpoint(os.path.join(ckpt_dir, "last.pth"), model, opt, sched, g, va)
             g += 1
+    _save_history(ckpt_dir, history)
 
     _report_vram(device)
     print(f"  → best FG Dice GSL ({arch}): {best_fg:.4f}")
@@ -366,6 +370,69 @@ def _backup(ckpt_dir: str, backup_dir: str, arch: str) -> None:
         if os.path.isfile(src):
             shutil.copy2(src, os.path.join(dst, name))
     print(f"  [backup] {ckpt_dir} → {dst}")
+
+
+def _train_class_weights(data_root: str, device, num_classes: int):
+    """Pesi inverse-frequency calcolati SOLO sul TRAIN split (no leak val/test).
+
+    Conta i voxel per classe sulle maschere di ``<data_root>/train/masks``, li
+    converte in frequenze e poi in pesi via ``get_class_weights``. Risultato in
+    cache su ``<data_root>/class_freq_train.json``. Se le maschere non ci sono,
+    ripiega su ``constants.VOXEL_FREQ`` (statistica globale) documentando il caso.
+    """
+    import glob
+    import json
+    import numpy as np
+    from src.train_utils import get_class_weights
+
+    cache = os.path.join(data_root, "class_freq_train.json")
+    if os.path.isfile(cache):
+        freq = np.asarray(json.load(open(cache))["freq"], dtype=np.float32)
+        print(f"  [class-weights] frequenze TRAIN-only da cache: {np.round(freq, 5)}")
+        return get_class_weights(voxel_freq=freq, device=device)
+
+    mask_dir = os.path.join(data_root, "train", "masks")
+    files = sorted(glob.glob(os.path.join(mask_dir, "*.npy")))
+    if not files:
+        print(f"  [class-weights] {mask_dir} assente/vuota -> fallback su VOXEL_FREQ (constants).")
+        return get_class_weights(device=device)
+
+    counts = np.zeros(num_classes, dtype=np.int64)
+    for fpath in files:
+        m = np.load(fpath).astype(np.int64).ravel()
+        counts += np.bincount(m, minlength=num_classes)[:num_classes]
+    freq = (counts / counts.sum()).astype(np.float32)
+    with open(cache, "w") as f:
+        json.dump({"split": "train", "n_masks": len(files),
+                   "counts": counts.tolist(), "freq": freq.tolist()}, f, indent=2)
+    print(f"  [class-weights] TRAIN-only ({len(files)} maschere) freq={np.round(freq, 5)} "
+          f"-> cache {cache}")
+    return get_class_weights(voxel_freq=freq, device=device)
+
+
+def _history_row(g: int, phase: int, tr: Dict[str, float],
+                 va: Dict[str, float], val_fg: float) -> Dict[str, float]:
+    """Una riga di history per epoca: loss e Dice foreground, train E val."""
+    def _fg(d):
+        return (d.get("dice_NCR", 0.0) + d.get("dice_ED", 0.0) + d.get("dice_ET", 0.0)) / 3.0
+    row = {"epoch": g, "phase": phase,
+           "train_loss": tr.get("loss"), "val_loss": va.get("loss"),
+           "train_fg_dice": _fg(tr), "val_fg_dice": val_fg}
+    for k in ("dice_NCR", "dice_ED", "dice_ET", "dice_background"):
+        row[f"train_{k}"] = tr.get(k)
+        row[f"val_{k}"] = va.get(k)
+    if "alpha" in va:
+        row["alpha"] = va.get("alpha")
+    return row
+
+
+def _save_history(ckpt_dir: str, history: List[dict]) -> None:
+    """Scrive le curve train/val per epoca in <ckpt_dir>/history.json."""
+    import json
+    path = os.path.join(ckpt_dir, "history.json")
+    with open(path, "w") as f:
+        json.dump(history, f, indent=2)
+    print(f"  [history] curve train/val -> {path} ({len(history)} epoche)")
 
 
 def gsl_precompute(data_root: str, archive: str) -> None:
