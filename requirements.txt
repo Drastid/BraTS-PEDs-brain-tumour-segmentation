@@ -18,7 +18,12 @@ torchvision
 segmentation-models-pytorch
 
 # Transformers (SegFormer)
-transformers
+# PINNED: src/models.py accesses SegFormer-specific internals
+# (.segformer.encoder.patch_embeddings[0].proj for the 4-channel patch-embed fix,
+# .decode_head, outputs.logits). An unpinned install lets Colab pull a newer 5.x
+# that restructures these internals → AttributeError at train time and a
+# train/eval state_dict key mismatch. 5.6.2 is the version validated for this repo.
+transformers==5.6.2
 accelerate
 
 # Data augmentation

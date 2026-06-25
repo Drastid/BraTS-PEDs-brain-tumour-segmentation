@@ -137,10 +137,40 @@ def build_model(arch: str, cfg, device):
                        in_channels=cfg.in_channels, classes=cfg.num_classes,
                        activation=None).to(device)
     if arch == "segformer":
+        _check_transformers_version()
         from src.models import get_segformer
         return get_segformer(model_checkpoint=cfg.segformer_checkpoint,
                              num_classes=cfg.num_classes).to(device)
     raise ValueError(f"arch sconosciuta: {arch!r} (attese: unet|fpn|segformer)")
+
+
+# Versione di transformers validata per src/models.py (fix 4-canali su
+# .segformer.encoder.patch_embeddings[0].proj). Una versione diversa può
+# riscrivere la struttura interna di SegFormer → AttributeError o mismatch del
+# state_dict tra train ed eval. Vedi requirements.txt e trasloco.md §6.2.
+_PINNED_TRANSFORMERS = "5.6.2"
+
+
+def _check_transformers_version() -> None:
+    """Avvisa (non blocca) se transformers non è la versione pinnata."""
+    try:
+        import transformers
+    except ImportError:
+        raise ImportError(
+            "transformers non installato. Esegui: "
+            f'pip install "transformers=={_PINNED_TRANSFORMERS}"'
+        )
+    ver = transformers.__version__
+    if ver != _PINNED_TRANSFORMERS:
+        print(
+            "\n" + "!" * 70 + "\n"
+            f"  [ATTENZIONE] transformers {ver} ≠ {_PINNED_TRANSFORMERS} (pinnata).\n"
+            "  SegFormer potrebbe rompersi (struttura interna diversa) o produrre\n"
+            "  checkpoint incompatibili in valutazione. Consigliato:\n"
+            f'    pip uninstall -y transformers && pip install "transformers=={_PINNED_TRANSFORMERS}"\n'
+            "  poi RIAVVIA il runtime (vedi trasloco.md §6.2-bis).\n"
+            + "!" * 70 + "\n"
+        )
 
 
 def build_optim_sched(model, cfg, phase: int):
@@ -231,7 +261,8 @@ def _resolve_amp(cfg, device) -> str:
 
 
 def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
-                use_gsl: bool, backup_dir: Optional[str]) -> Dict[str, float]:
+                use_gsl: bool, backup_dir: Optional[str],
+                gsl_alpha_min: float = 0.2) -> Dict[str, float]:
     """Allena un modello e salva best/last. Ritorna le metriche di validazione best."""
     import torch
     from src.train_utils import (set_seed, get_class_weights, save_checkpoint,
@@ -253,7 +284,7 @@ def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
 
     if use_gsl:
         return _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
-                          amp_dtype, scaler, backup_dir)
+                          amp_dtype, scaler, backup_dir, alpha_min=gsl_alpha_min)
 
     # --- Baseline: CombinedLoss (gamma=, class_weights=) ---
     from src.losses import CombinedLoss
@@ -289,9 +320,47 @@ def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
     return best_metrics
 
 
+class _Phase2AlphaScheduler:
+    """AlphaScheduler che resta a 1.0 in Phase 1 e scende (con floor) in Phase 2.
+
+    Due scelte di design (decise con l'utente), realizzate SENZA toccare
+    ``src/losses.py``:
+
+    1. **alpha=1.0 fisso durante Phase 1** (encoder congelato): la GSL inizia a
+       contare solo quando l'encoder può davvero adattarsi ai bordi. Lo
+       scheduler interno è costruito sulle SOLE epoche di Phase 2; per gli indici
+       di epoca < ``phase1_epochs`` ritorna 1.0.
+
+    2. **floor su alpha** (default 0.2): in Phase 2 alpha scende da 1.0 ma non
+       sotto ``alpha_min``, così la region loss (Dice+Focal) resta sempre viva
+       (es. 20%) ed evita il collasso del gradiente quando la GSL è già minima.
+       Deviazione consapevole dal paper (che porta alpha a 0) — da dichiarare nel
+       report.
+
+    L'oggetto è compatibile con ``DiceFocalGSLLoss`` (espone ``__call__(epoch)``);
+    ``set_epoch`` della loss lo userà come un normale AlphaScheduler.
+    """
+
+    def __init__(self, inner, phase1_epochs: int, alpha_min: float = 0.2) -> None:
+        self.inner = inner                       # AlphaScheduler sulle epoche di Phase 2
+        self.phase1_epochs = int(phase1_epochs)
+        self.alpha_min = float(alpha_min)
+
+    def __call__(self, epoch: int) -> float:
+        if epoch < self.phase1_epochs:
+            return 1.0                            # Phase 1: solo region loss
+        # Rebase: l'epoca 0 di Phase 2 mappa sull'epoca 0 dello scheduler interno
+        a = self.inner(epoch - self.phase1_epochs)
+        return max(self.alpha_min, a)             # floor: region sempre >= alpha_min
+
+
 def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
-               amp_dtype, scaler, backup_dir) -> Dict[str, float]:
-    """Training con loss schedulata Dice-Focal + GSL (fase3_loss_gsl.md §3)."""
+               amp_dtype, scaler, backup_dir, alpha_min: float = 0.2) -> Dict[str, float]:
+    """Training con loss schedulata Dice-Focal + GSL (fase3_loss_gsl.md §3).
+
+    alpha=1.0 in Phase 1 (encoder frozen), poi scende a gradini su Phase 2 con un
+    floor ``alpha_min`` (vedi :class:`_Phase2AlphaScheduler`).
+    """
     import json
     from src.losses import DiceFocalGSLLoss, AlphaScheduler
     from src.train_utils import train_one_epoch_gsl, evaluate_gsl, format_metrics, save_checkpoint
@@ -306,12 +375,19 @@ def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
     with open(weights_path) as f:
         wk = json.load(f)["weights"]
 
+    # Scheduler interno sulle SOLE epoche di Phase 2; il wrapper aggiunge il
+    # plateau di Phase 1 (alpha=1) e il floor.
+    inner = AlphaScheduler(schedule="step", total_epochs=cfg.phase2_epochs, step_length=5)
+    scheduler = _Phase2AlphaScheduler(inner, phase1_epochs=cfg.phase1_epochs, alpha_min=alpha_min)
+
     criterion = DiceFocalGSLLoss(
         num_classes=cfg.num_classes, gsl_class_weights=wk,
-        scheduler=AlphaScheduler(schedule="step", total_epochs=cfg.total_epochs, step_length=5),
+        scheduler=scheduler,
         dice_weight=cfg.dice_weight, focal_weight=cfg.focal_weight,
         gamma=cfg.focal_gamma, ignore_background=cfg.ignore_background,
     ).to(device)
+    print(f"  [gsl] alpha: 1.0 in Phase 1 ({cfg.phase1_epochs} ep), poi step-5 "
+          f"in Phase 2 ({cfg.phase2_epochs} ep) con floor={alpha_min}")
 
     train_loader, val_loader = make_loaders(cfg, data_root, return_dtm=True)
 
@@ -428,6 +504,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help="Prima del training GSL, (ri)genera pesi globali + DTM.")
     p.add_argument("--gsl-archive", default="tar", choices=["none", "tar", "zip"],
                    help="Formato archivio DTM passato a precompute_gsl_stats.")
+    p.add_argument("--gsl-alpha-min", type=float, default=0.2,
+                   help="Floor di alpha in Phase 2 (la region Dice+Focal resta viva a "
+                        "questa frazione). 0.0 = fedele al paper (GSL pura a fine training). "
+                        "alpha resta 1.0 durante Phase 1 (encoder frozen).")
 
     p.add_argument("--backup-dir", default=None,
                    help="Cartella (es. su Drive) dove copiare i checkpoint dopo ogni modello.")
@@ -498,6 +578,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             results[arch] = train_model(
                 arch, cfg, device, args.data_root, args.ckpt_root,
                 use_gsl=args.gsl, backup_dir=args.backup_dir,
+                gsl_alpha_min=args.gsl_alpha_min,
             )
         print("\n" + "=" * 70)
         print("  RIEPILOGO best FG Dice (val)")
