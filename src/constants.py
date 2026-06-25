@@ -31,8 +31,12 @@ ORIG_SIZE: int = 240   # full H and W of each 2D .npy slice
 N_SLICES: int = 155    # axial depth of every BraTS-PEDs volume
 
 # ---------------------------------------------------------------------------
-# Class-frequency vector (from EDA on 257 subjects)
+# Class-frequency vector (FULL dataset, 257 subjects = train+val+test).
 # Background: 99.40 %   NCR: 0.066 %   ED: 0.441 %   ET: 0.091 %
+# NOTE: used ONLY as a fallback. To avoid leaking val/test statistics into the
+# loss, run_pipeline computes inverse-frequency class weights from the TRAIN
+# split alone at runtime (_train_class_weights). These global numbers remain
+# here for reference / offline use.
 # ---------------------------------------------------------------------------
 
 VOXEL_FREQ: np.ndarray = np.array(

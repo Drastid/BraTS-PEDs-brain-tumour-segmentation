@@ -64,8 +64,14 @@ class SegFormerWrapper(nn.Module):
 
     @property
     def encoder(self) -> nn.Module:
-        """Encoder backbone — used by set_encoder_trainable()."""
-        return self.model.segformer.encoder
+        """Encoder backbone — used by set_encoder_trainable().
+
+        transformers >=5 flattened the SegFormer backbone: the old
+        ``segformer.encoder`` no longer exists (the stages live directly under
+        ``segformer``). Fall back to ``segformer`` itself in that case.
+        """
+        seg = self.model.segformer
+        return seg.encoder if hasattr(seg, "encoder") else seg
 
     @property
     def decode_head(self) -> nn.Module:
@@ -136,7 +142,14 @@ def get_segformer(
     )
 
     # ── 2. Expand first patch embedding: [C_out, 3, k, k] → [C_out, 4, k, k] ──
-    proj = hf_model.segformer.encoder.patch_embeddings[0].proj
+    # transformers <5 : segformer.encoder.patch_embeddings[0] (ModuleList)
+    # transformers >=5: segformer.stages[0].patch_embeddings (per-stage)
+    seg = hf_model.segformer
+    if hasattr(seg, "stages"):
+        patch_embed = seg.stages[0].patch_embeddings
+    else:
+        patch_embed = seg.encoder.patch_embeddings[0]
+    proj = patch_embed.proj
     old_weight = proj.weight.data.clone()  # [C_out, 3, kH, kW]
     C_out, _, kH, kW = old_weight.shape
 
@@ -156,6 +169,6 @@ def get_segformer(
     if proj.bias is not None:
         new_proj.bias = nn.Parameter(proj.bias.data.clone())
 
-    hf_model.segformer.encoder.patch_embeddings[0].proj = new_proj
+    patch_embed.proj = new_proj
 
     return SegFormerWrapper(hf_model)

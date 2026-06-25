@@ -144,31 +144,34 @@ def build_model(arch: str, cfg, device):
     raise ValueError(f"arch sconosciuta: {arch!r} (attese: unet|fpn|segformer)")
 
 
-# Versione di transformers validata per src/models.py (fix 4-canali su
-# .segformer.encoder.patch_embeddings[0].proj). Una versione diversa può
-# riscrivere la struttura interna di SegFormer → AttributeError o mismatch del
-# state_dict tra train ed eval. Vedi requirements.txt e trasloco.md §6.2.
-_PINNED_TRANSFORMERS = "5.6.2"
+# Serie di transformers supportata da src/models.py. Il wrapper SegFormer
+# gestisce SIA la struttura vecchia (segformer.encoder.patch_embeddings[i], <=~5.6)
+# SIA quella nuova (segformer.stages[i].patch_embeddings, 5.7+), quindi qualunque
+# 5.x va bene (5.6.2 in locale, 5.12.1 su Colab). Una 6.x potrebbe ristrutturare
+# di nuovo → fuori dalla serie 5 avvisiamo. Vedi requirements.txt (transformers>=5,<6).
+_SUPPORTED_TRANSFORMERS_MAJOR = 5
 
 
 def _check_transformers_version() -> None:
-    """Avvisa (non blocca) se transformers non è la versione pinnata."""
+    """Avvisa (non blocca) se transformers è fuori dalla serie 5.x supportata."""
     try:
         import transformers
     except ImportError:
         raise ImportError(
-            "transformers non installato. Esegui: "
-            f'pip install "transformers=={_PINNED_TRANSFORMERS}"'
+            'transformers non installato. Esegui: pip install "transformers>=5,<6"'
         )
     ver = transformers.__version__
-    if ver != _PINNED_TRANSFORMERS:
+    try:
+        major = int(ver.split(".")[0])
+    except (ValueError, IndexError):
+        major = -1
+    if major != _SUPPORTED_TRANSFORMERS_MAJOR:
         print(
             "\n" + "!" * 70 + "\n"
-            f"  [ATTENZIONE] transformers {ver} ≠ {_PINNED_TRANSFORMERS} (pinnata).\n"
-            "  SegFormer potrebbe rompersi (struttura interna diversa) o produrre\n"
-            "  checkpoint incompatibili in valutazione. Consigliato:\n"
-            f'    pip uninstall -y transformers && pip install "transformers=={_PINNED_TRANSFORMERS}"\n'
-            "  poi RIAVVIA il runtime (vedi trasloco.md §6.2-bis).\n"
+            f"  [ATTENZIONE] transformers {ver}: fuori dalla serie "
+            f"{_SUPPORTED_TRANSFORMERS_MAJOR}.x supportata da src/models.py.\n"
+            "  SegFormer potrebbe rompersi (struttura interna diversa). Consigliato:\n"
+            '    pip install "transformers>=5,<6"  e RIAVVIA il runtime.\n'
             + "!" * 70 + "\n"
         )
 
@@ -190,7 +193,12 @@ def build_optim_sched(model, cfg, phase: int):
     else:
         set_encoder_trainable(model, True)
         enc = list(model.encoder.parameters())
-        dec = [p for n, p in model.named_parameters() if not n.startswith("encoder.")]
+        # Escludi i parametri encoder per IDENTITA' (non per prefisso nome): il
+        # wrapper SegFormer espone i param sotto "model.*", quindi un filtro per
+        # nome duplicherebbe il backbone tra i due gruppi e AdamW andrebbe in
+        # errore. Per id funziona anche per i modelli SMP (Unet/FPN) invariati.
+        enc_ids = {id(p) for p in enc}
+        dec = [p for p in model.parameters() if id(p) not in enc_ids]
         opt = torch.optim.AdamW(
             [{"params": enc, "lr": cfg.lr_phase2 * cfg.encoder_lr_mult},
              {"params": dec, "lr": cfg.lr_phase2}],
@@ -292,26 +300,28 @@ def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
         num_classes=cfg.num_classes,
         dice_weight=cfg.dice_weight, focal_weight=cfg.focal_weight,
         gamma=cfg.focal_gamma, ignore_background=cfg.ignore_background,
-        class_weights=get_class_weights(device=device),
+        class_weights=_train_class_weights(data_root, device, cfg.num_classes),
     ).to(device)
 
     train_loader, val_loader = make_loaders(cfg, data_root, return_dtm=False)
 
-    best_fg, best_metrics, g = -1.0, {}, 0
+    best_fg, best_metrics, g, history = -1.0, {}, 0, []
     for phase, n_ep in [(1, cfg.phase1_epochs), (2, cfg.phase2_epochs)]:
         opt, sched = build_optim_sched(model, cfg, phase)
         for e in range(n_ep):
-            train_one_epoch(model, train_loader, criterion, opt, device,
-                            crop_size=cfg.crop_size, scaler=scaler, amp_dtype=amp_dtype)
+            tr = train_one_epoch(model, train_loader, criterion, opt, device,
+                                 crop_size=cfg.crop_size, scaler=scaler, amp_dtype=amp_dtype)
             va = evaluate(model, val_loader, criterion, device, crop_size=cfg.crop_size)
             sched.step()
             fg = (va["dice_NCR"] + va["dice_ED"] + va["dice_ET"]) / 3.0
+            history.append(_history_row(g, phase, tr, va, fg))
             print(f"  [P{phase} ep {e+1}/{n_ep}] {format_metrics(va, 'val')}  fg_dice={fg:.4f}")
             if fg > best_fg:
                 best_fg, best_metrics = fg, va
                 save_checkpoint(os.path.join(ckpt_dir, "best.pth"), model, opt, sched, g, va)
             save_checkpoint(os.path.join(ckpt_dir, "last.pth"), model, opt, sched, g, va)
             g += 1
+    _save_history(ckpt_dir, history)
 
     _report_vram(device)
     print(f"  → best FG Dice ({arch}): {best_fg:.4f}")
@@ -391,16 +401,17 @@ def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
 
     train_loader, val_loader = make_loaders(cfg, data_root, return_dtm=True)
 
-    best_fg, best_metrics, g = -1.0, {}, 0
+    best_fg, best_metrics, g, history = -1.0, {}, 0, []
     for phase, n_ep in [(1, cfg.phase1_epochs), (2, cfg.phase2_epochs)]:
         opt, sched = build_optim_sched(model, cfg, phase)
         for e in range(n_ep):
-            train_one_epoch_gsl(model, train_loader, criterion, opt, device,
-                                epoch=g, crop_size=cfg.crop_size,
-                                scaler=scaler, amp_dtype=amp_dtype)
+            tr = train_one_epoch_gsl(model, train_loader, criterion, opt, device,
+                                     epoch=g, crop_size=cfg.crop_size,
+                                     scaler=scaler, amp_dtype=amp_dtype)
             va = evaluate_gsl(model, val_loader, criterion, device, crop_size=cfg.crop_size)
             sched.step()
             fg = (va["dice_NCR"] + va["dice_ED"] + va["dice_ET"]) / 3.0
+            history.append(_history_row(g, phase, tr, va, fg))
             print(f"  [P{phase} ep {e+1}/{n_ep}] alpha={va.get('alpha', float('nan')):.2f}  "
                   f"{format_metrics(va, 'val')}  fg_dice={fg:.4f}")
             if fg > best_fg:
@@ -408,6 +419,7 @@ def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
                 save_checkpoint(os.path.join(ckpt_dir, "best.pth"), model, opt, sched, g, va)
             save_checkpoint(os.path.join(ckpt_dir, "last.pth"), model, opt, sched, g, va)
             g += 1
+    _save_history(ckpt_dir, history)
 
     _report_vram(device)
     print(f"  → best FG Dice GSL ({arch}): {best_fg:.4f}")
@@ -439,6 +451,69 @@ def _backup(ckpt_dir: str, backup_dir: str, arch: str) -> None:
     print(f"  [backup] {ckpt_dir} → {dst}")
 
 
+def _train_class_weights(data_root: str, device, num_classes: int):
+    """Pesi inverse-frequency calcolati SOLO sul TRAIN split (no leak val/test).
+
+    Conta i voxel per classe sulle maschere di ``<data_root>/train/masks``, li
+    converte in frequenze e poi in pesi via ``get_class_weights``. Risultato in
+    cache su ``<data_root>/class_freq_train.json``. Se le maschere non ci sono,
+    ripiega su ``constants.VOXEL_FREQ`` (statistica globale) documentando il caso.
+    """
+    import glob
+    import json
+    import numpy as np
+    from src.train_utils import get_class_weights
+
+    cache = os.path.join(data_root, "class_freq_train.json")
+    if os.path.isfile(cache):
+        freq = np.asarray(json.load(open(cache))["freq"], dtype=np.float32)
+        print(f"  [class-weights] frequenze TRAIN-only da cache: {np.round(freq, 5)}")
+        return get_class_weights(voxel_freq=freq, device=device)
+
+    mask_dir = os.path.join(data_root, "train", "masks")
+    files = sorted(glob.glob(os.path.join(mask_dir, "*.npy")))
+    if not files:
+        print(f"  [class-weights] {mask_dir} assente/vuota -> fallback su VOXEL_FREQ (constants).")
+        return get_class_weights(device=device)
+
+    counts = np.zeros(num_classes, dtype=np.int64)
+    for fpath in files:
+        m = np.load(fpath).astype(np.int64).ravel()
+        counts += np.bincount(m, minlength=num_classes)[:num_classes]
+    freq = (counts / counts.sum()).astype(np.float32)
+    with open(cache, "w") as f:
+        json.dump({"split": "train", "n_masks": len(files),
+                   "counts": counts.tolist(), "freq": freq.tolist()}, f, indent=2)
+    print(f"  [class-weights] TRAIN-only ({len(files)} maschere) freq={np.round(freq, 5)} "
+          f"-> cache {cache}")
+    return get_class_weights(voxel_freq=freq, device=device)
+
+
+def _history_row(g: int, phase: int, tr: Dict[str, float],
+                 va: Dict[str, float], val_fg: float) -> Dict[str, float]:
+    """Una riga di history per epoca: loss e Dice foreground, train E val."""
+    def _fg(d):
+        return (d.get("dice_NCR", 0.0) + d.get("dice_ED", 0.0) + d.get("dice_ET", 0.0)) / 3.0
+    row = {"epoch": g, "phase": phase,
+           "train_loss": tr.get("loss"), "val_loss": va.get("loss"),
+           "train_fg_dice": _fg(tr), "val_fg_dice": val_fg}
+    for k in ("dice_NCR", "dice_ED", "dice_ET", "dice_background"):
+        row[f"train_{k}"] = tr.get(k)
+        row[f"val_{k}"] = va.get(k)
+    if "alpha" in va:
+        row["alpha"] = va.get("alpha")
+    return row
+
+
+def _save_history(ckpt_dir: str, history: List[dict]) -> None:
+    """Scrive le curve train/val per epoca in <ckpt_dir>/history.json."""
+    import json
+    path = os.path.join(ckpt_dir, "history.json")
+    with open(path, "w") as f:
+        json.dump(history, f, indent=2)
+    print(f"  [history] curve train/val -> {path} ({len(history)} epoche)")
+
+
 def gsl_precompute(data_root: str, archive: str) -> None:
     """Lancia lo script offline GSL (pesi globali + DTM per slice)."""
     print("\n" + "=" * 70)
@@ -452,15 +527,24 @@ def gsl_precompute(data_root: str, archive: str) -> None:
     subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=True)
 
 
-def run_evaluation(models: List[str]) -> None:
-    """Valutazione 3D sul test set via lo script CLI del progetto."""
+def run_evaluation(models: List[str], data_root: str, ckpt_root: str,
+                   output_dir: Optional[str] = None) -> None:
+    """Valutazione 3D sul test set via lo script CLI del progetto.
+
+    Inoltra --data-root/--ckpt-root (e opzionale --output-dir) a
+    src.evaluate_3d_test, così l'eval usa ESATTAMENTE gli stessi path del
+    training (niente più path hardcoded: baseline e GSL restano separati).
+    """
     print("\n" + "=" * 70)
     print("  [eval] Valutazione 3D sul TEST set (Dice / IoU / HD95)")
     print("=" * 70)
     # 'all' se ci sono tutti e tre, altrimenti un modello alla volta
     targets = ["all"] if set(models) >= {"unet", "fpn", "segformer"} else models
-    for t in targets:
-        cmd = [sys.executable, "-m", "src.evaluate_3d_test", "--model", t]
+    for tg in targets:
+        cmd = [sys.executable, "-m", "src.evaluate_3d_test", "--model", tg,
+               "--data-root", data_root, "--ckpt-root", ckpt_root]
+        if output_dir:
+            cmd += ["--output-dir", output_dir]
         print("  $ " + " ".join(cmd))
         subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=True)
 
@@ -591,7 +675,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 5. Valutazione 3D
     if args.evaluate:
-        run_evaluation(args.models)
+        run_evaluation(args.models, args.data_root, args.ckpt_root)
         if args.backup_dir:
             out = PROJECT_ROOT / "evaluation_outputs"
             if out.is_dir():
