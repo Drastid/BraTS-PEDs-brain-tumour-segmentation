@@ -345,7 +345,42 @@ def main():
         default="all",
         help="Which model to evaluate: 'unet', 'fpn', 'segformer', or 'all' (default).",
     )
+    parser.add_argument(
+        "--data-root",
+        type=str,
+        default=None,
+        help="Dataset root containing the 'test' split "
+             "(default: <repo>/processed_dataset). Overrides TEST_DATA_DIR.",
+    )
+    parser.add_argument(
+        "--ckpt-root",
+        type=str,
+        default=None,
+        help="Checkpoints root containing <arch>/best.pth "
+             "(default: <repo>/checkpoints). Overrides the *_CHECKPOINT paths.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Where to write the *_3d_metrics JSON "
+             "(default: <repo>/evaluation_outputs). Overrides OUTPUT_DIR.",
+    )
     args = parser.parse_args()
+
+    # Optional path overrides. Defaults stay None => module-level constants are
+    # left untouched, so importers (export_nifti_predictions, notebook 04) and
+    # the legacy `--model ...`-only invocation behave exactly as before.
+    global TEST_DATA_DIR, OUTPUT_DIR
+    global UNET_CHECKPOINT, FPN_CHECKPOINT, SEGFORMER_CHECKPOINT
+    if args.data_root:
+        TEST_DATA_DIR = os.path.join(args.data_root, "test")
+    if args.ckpt_root:
+        UNET_CHECKPOINT = os.path.join(args.ckpt_root, "unet", "best.pth")
+        FPN_CHECKPOINT = os.path.join(args.ckpt_root, "fpn", "best.pth")
+        SEGFORMER_CHECKPOINT = os.path.join(args.ckpt_root, "segformer", "best.pth")
+    if args.output_dir:
+        OUTPUT_DIR = args.output_dir
 
     print(f"PyTorch  : {torch.__version__}")
     print(f"CUDA     : {torch.cuda.is_available()}")

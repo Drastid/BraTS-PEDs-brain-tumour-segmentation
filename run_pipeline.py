@@ -376,15 +376,24 @@ def gsl_precompute(data_root: str, archive: str) -> None:
     subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=True)
 
 
-def run_evaluation(models: List[str]) -> None:
-    """Valutazione 3D sul test set via lo script CLI del progetto."""
+def run_evaluation(models: List[str], data_root: str, ckpt_root: str,
+                   output_dir: Optional[str] = None) -> None:
+    """Valutazione 3D sul test set via lo script CLI del progetto.
+
+    Inoltra --data-root/--ckpt-root (e opzionale --output-dir) a
+    src.evaluate_3d_test, così l'eval usa ESATTAMENTE gli stessi path del
+    training (niente più path hardcoded: baseline e GSL restano separati).
+    """
     print("\n" + "=" * 70)
     print("  [eval] Valutazione 3D sul TEST set (Dice / IoU / HD95)")
     print("=" * 70)
     # 'all' se ci sono tutti e tre, altrimenti un modello alla volta
     targets = ["all"] if set(models) >= {"unet", "fpn", "segformer"} else models
-    for t in targets:
-        cmd = [sys.executable, "-m", "src.evaluate_3d_test", "--model", t]
+    for tg in targets:
+        cmd = [sys.executable, "-m", "src.evaluate_3d_test", "--model", tg,
+               "--data-root", data_root, "--ckpt-root", ckpt_root]
+        if output_dir:
+            cmd += ["--output-dir", output_dir]
         print("  $ " + " ".join(cmd))
         subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=True)
 
@@ -510,7 +519,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 5. Valutazione 3D
     if args.evaluate:
-        run_evaluation(args.models)
+        run_evaluation(args.models, args.data_root, args.ckpt_root)
         if args.backup_dir:
             out = PROJECT_ROOT / "evaluation_outputs"
             if out.is_dir():
