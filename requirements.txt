@@ -4,6 +4,7 @@ matplotlib
 scipy
 tqdm
 pandas
+scikit-learn   # sklearn.model_selection.train_test_split (02_preprocessing)
 
 # Medical imaging I/O
 nibabel
