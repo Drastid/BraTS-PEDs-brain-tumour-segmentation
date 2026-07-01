@@ -85,6 +85,12 @@ class TrainConfig:
     early_stopping: bool = False
     es_patience: int = 6              # epochs without improvement before stop
     es_min_delta: float = 0.0         # minimum val fg-Dice gain to count as "better"
+    # Moving-average window applied to the monitored val fg-Dice BEFORE both the
+    # early-stop decision and the best-checkpoint selection. The BraTS-PEDs val
+    # curve is noisy (it wobbles ~0.66-0.71 across late Phase 2), so a raw-value
+    # patience rule stops on transient dips and best.pth chases noise spikes.
+    # 1 = no smoothing (legacy, exact reproducibility); 3 recommended.
+    es_smooth_window: int = 1
 
     # ── Loss ─────────────────────────────────────────────────────────────
     dice_weight: float = 1.0

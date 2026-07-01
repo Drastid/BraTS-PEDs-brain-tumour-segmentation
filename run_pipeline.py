@@ -176,6 +176,28 @@ def _check_transformers_version() -> None:
         )
 
 
+def _monitor_value(history, window: int) -> float:
+    """Moving-average of the last ``window`` val fg-Dice values in ``history``.
+
+    Smooths the noisy BraTS-PEDs validation curve before it drives the
+    early-stop decision and the best-checkpoint selection. ``window=1`` returns
+    the raw latest value (legacy behaviour, exact reproducibility). The average
+    is taken over whatever epochs exist so far (so early epochs use fewer
+    points), spanning the Phase 1->2 boundary harmlessly since it is just the
+    validation curve.
+
+    Args:
+        history: List of per-epoch rows (each with a ``val_fg_dice`` key).
+        window:  Number of trailing epochs to average (>=1).
+
+    Returns:
+        The smoothed monitor value for the most recent epoch.
+    """
+    w = max(1, int(window))
+    vals = [r["val_fg_dice"] for r in history[-w:]]
+    return sum(vals) / len(vals)
+
+
 class _EarlyStopper:
     """Tracks the best monitored metric and decides when to stop.
 
@@ -316,7 +338,8 @@ def _resolve_amp(cfg, device) -> str:
 
 def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
                 use_gsl: bool, backup_dir: Optional[str],
-                gsl_alpha_min: float = 0.2) -> Dict[str, float]:
+                gsl_alpha_min: float = 0.2,
+                run_name: Optional[str] = None) -> Dict[str, float]:
     """Allena un modello e salva best/last. Ritorna le metriche di validazione best."""
     import torch
     from src.train_utils import (set_seed, get_class_weights, save_checkpoint,
@@ -338,7 +361,8 @@ def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
 
     if use_gsl:
         return _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
-                          amp_dtype, scaler, backup_dir, alpha_min=gsl_alpha_min)
+                          amp_dtype, scaler, backup_dir, alpha_min=gsl_alpha_min,
+                          run_name=run_name)
 
     # --- Baseline: CombinedLoss (gamma=, class_weights=) ---
     from src.losses import CombinedLoss
@@ -351,12 +375,16 @@ def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
 
     train_loader, val_loader = make_loaders(cfg, data_root, return_dtm=False)
 
+    W = max(1, getattr(cfg, "es_smooth_window", 1))
     stopper = _EarlyStopper(cfg.early_stopping, cfg.es_patience, cfg.es_min_delta)
     if cfg.early_stopping:
-        print(f"  [early-stopping] ON — monitor=val_fg_dice patience={cfg.es_patience} "
+        _mon = f"val_fg_dice (media mobile {W})" if W > 1 else "val_fg_dice"
+        print(f"  [early-stopping] ON — monitor={_mon} patience={cfg.es_patience} "
               f"min_delta={cfg.es_min_delta} (Phase 2 only)")
+    elif W > 1:
+        print(f"  [monitor] best.pth selezionato su val_fg_dice, media mobile a {W} epoche")
 
-    best_fg, best_metrics, g, history = -1.0, {}, 0, []
+    best_fg, best_mon, best_metrics, g, history = -1.0, -1.0, {}, 0, []
     stopped = False
     for phase, n_ep in [(1, cfg.phase1_epochs), (2, cfg.phase2_epochs)]:
         opt, sched = build_optim_sched(model, cfg, phase)
@@ -367,15 +395,16 @@ def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
             sched.step()
             fg = (va["dice_NCR"] + va["dice_ED"] + va["dice_ET"]) / 3.0
             history.append(_history_row(g, phase, tr, va, fg))
+            mon = _monitor_value(history, W)
             print(f"  [P{phase} ep {e+1}/{n_ep}] {format_metrics(va, 'val')}  fg_dice={fg:.4f}")
-            if fg > best_fg:
-                best_fg, best_metrics = fg, va
+            if mon > best_mon:
+                best_mon, best_fg, best_metrics = mon, fg, va
                 save_checkpoint(os.path.join(ckpt_dir, "best.pth"), model, opt, sched, g, va)
             save_checkpoint(os.path.join(ckpt_dir, "last.pth"), model, opt, sched, g, va)
             g += 1
             # Early stopping is evaluated only during Phase 2 (Phase 1 is a
             # fixed warm-up); the global best above is untouched by it.
-            if phase == 2 and stopper.update(fg, g - 1):
+            if phase == 2 and stopper.update(mon, g - 1):
                 print(f"  [early-stopping] stop a epoch {g-1}: nessun miglioramento "
                       f"del val fg-Dice per {cfg.es_patience} epoche "
                       f"(best={stopper.best:.4f} @ ep{stopper.best_epoch}).")
@@ -388,7 +417,7 @@ def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
     _report_vram(device)
     print(f"  → best FG Dice ({arch}): {best_fg:.4f}")
     if backup_dir:
-        _backup(ckpt_dir, backup_dir, arch)
+        _backup(ckpt_dir, backup_dir, arch, run_name)
     return best_metrics
 
 
@@ -427,7 +456,8 @@ class _Phase2AlphaScheduler:
 
 
 def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
-               amp_dtype, scaler, backup_dir, alpha_min: float = 0.2) -> Dict[str, float]:
+               amp_dtype, scaler, backup_dir, alpha_min: float = 0.2,
+               run_name: Optional[str] = None) -> Dict[str, float]:
     """Training con loss schedulata Dice-Focal + GSL (fase3_loss_gsl.md §3).
 
     alpha=1.0 in Phase 1 (encoder frozen), poi scende a gradini su Phase 2 con un
@@ -463,12 +493,16 @@ def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
 
     train_loader, val_loader = make_loaders(cfg, data_root, return_dtm=True)
 
+    W = max(1, getattr(cfg, "es_smooth_window", 1))
     stopper = _EarlyStopper(cfg.early_stopping, cfg.es_patience, cfg.es_min_delta)
     if cfg.early_stopping:
-        print(f"  [early-stopping] ON — monitor=val_fg_dice patience={cfg.es_patience} "
+        _mon = f"val_fg_dice (media mobile {W})" if W > 1 else "val_fg_dice"
+        print(f"  [early-stopping] ON — monitor={_mon} patience={cfg.es_patience} "
               f"min_delta={cfg.es_min_delta} (Phase 2 only)")
+    elif W > 1:
+        print(f"  [monitor] best.pth selezionato su val_fg_dice, media mobile a {W} epoche")
 
-    best_fg, best_metrics, g, history = -1.0, {}, 0, []
+    best_fg, best_mon, best_metrics, g, history = -1.0, -1.0, {}, 0, []
     stopped = False
     for phase, n_ep in [(1, cfg.phase1_epochs), (2, cfg.phase2_epochs)]:
         opt, sched = build_optim_sched(model, cfg, phase)
@@ -480,14 +514,15 @@ def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
             sched.step()
             fg = (va["dice_NCR"] + va["dice_ED"] + va["dice_ET"]) / 3.0
             history.append(_history_row(g, phase, tr, va, fg))
+            mon = _monitor_value(history, W)
             print(f"  [P{phase} ep {e+1}/{n_ep}] alpha={va.get('alpha', float('nan')):.2f}  "
                   f"{format_metrics(va, 'val')}  fg_dice={fg:.4f}")
-            if fg > best_fg:
-                best_fg, best_metrics = fg, va
+            if mon > best_mon:
+                best_mon, best_fg, best_metrics = mon, fg, va
                 save_checkpoint(os.path.join(ckpt_dir, "best.pth"), model, opt, sched, g, va)
             save_checkpoint(os.path.join(ckpt_dir, "last.pth"), model, opt, sched, g, va)
             g += 1
-            if phase == 2 and stopper.update(fg, g - 1):
+            if phase == 2 and stopper.update(mon, g - 1):
                 print(f"  [early-stopping] stop a epoch {g-1}: nessun miglioramento "
                       f"del val fg-Dice per {cfg.es_patience} epoche "
                       f"(best={stopper.best:.4f} @ ep{stopper.best_epoch}).")
@@ -500,7 +535,7 @@ def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
     _report_vram(device)
     print(f"  → best FG Dice GSL ({arch}): {best_fg:.4f}")
     if backup_dir:
-        _backup(ckpt_dir, backup_dir, arch)
+        _backup(ckpt_dir, backup_dir, arch, run_name)
     return best_metrics
 
 
@@ -516,9 +551,17 @@ def _report_vram(device) -> None:
         torch.cuda.reset_peak_memory_stats()
 
 
-def _backup(ckpt_dir: str, backup_dir: str, arch: str) -> None:
-    """Copia i checkpoint di un modello nella cartella di backup (es. Drive)."""
-    dst = os.path.join(backup_dir, arch)
+def _backup(ckpt_dir: str, backup_dir: str, arch: str,
+            run_name: Optional[str] = None) -> None:
+    """Copia i checkpoint di un modello nella cartella di backup (es. Drive).
+
+    Quando ``run_name`` e' impostato, la destinazione e' namespacizzata come
+    ``backup_dir/<run_name>/<arch>``: senza questo, run diversi scriverebbero
+    tutti in ``backup_dir/<arch>`` e la ``history.json`` (e i .pth) dell'ultimo
+    sovrascriverebbe quelli dei precedenti, rendendo i run non confrontabili.
+    """
+    dst = os.path.join(backup_dir, run_name, arch) if run_name \
+        else os.path.join(backup_dir, arch)
     os.makedirs(dst, exist_ok=True)
     for name in ("best.pth", "last.pth", "history.json"):
         src = os.path.join(ckpt_dir, name)
@@ -695,6 +738,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help="Epoche senza miglioramento prima di fermarsi (default: config=6).")
     p.add_argument("--es-min-delta", type=float, default=None,
                    help="Miglioramento minimo del val fg-Dice per contare come progresso.")
+    p.add_argument("--es-smooth-window", type=int, default=None,
+                   help="Finestra media-mobile sul val fg-Dice per early stop E scelta "
+                        "del best.pth (1=nessuno smoothing; 3 consigliato per la val rumorosa).")
+    p.add_argument("--seed", type=int, default=None,
+                   help="Override del seed (per ripetizioni multi-seed).")
 
     p.add_argument("--weight-decay", type=float, default=None,
                    help="Override del weight decay AdamW (regolarizzazione L2).")
@@ -763,6 +811,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         overrides["es_patience"] = args.es_patience
     if args.es_min_delta is not None:
         overrides["es_min_delta"] = args.es_min_delta
+    if args.es_smooth_window is not None:
+        overrides["es_smooth_window"] = args.es_smooth_window
+    if args.seed is not None:
+        overrides["seed"] = args.seed
     if args.weight_decay is not None:
         overrides["weight_decay"] = args.weight_decay
     if args.encoder_lr_mult is not None:
@@ -823,6 +875,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 arch, cfg, device, args.data_root, ckpt_root,
                 use_gsl=args.gsl, backup_dir=args.backup_dir,
                 gsl_alpha_min=args.gsl_alpha_min,
+                run_name=args.run_name,
             )
         print("\n" + "=" * 70)
         print("  RIEPILOGO best FG Dice (val)")
