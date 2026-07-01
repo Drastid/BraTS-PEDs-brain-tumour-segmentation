@@ -176,6 +176,47 @@ def _check_transformers_version() -> None:
         )
 
 
+class _EarlyStopper:
+    """Tracks the best monitored metric and decides when to stop.
+
+    Designed for a MAXIMISED metric (validation foreground Dice). ``update``
+    is called once per epoch with the current value and returns ``True`` when
+    training should stop, i.e. the metric has failed to improve by more than
+    ``min_delta`` for ``patience`` consecutive *eligible* epochs.
+
+    Eligibility is controlled by the caller: we only feed Phase-2 epochs to the
+    stopper (Phase 1 is a fixed warm-up), while the best-checkpoint selection
+    stays global across both phases in the training loop. ``patience <= 0`` or
+    ``enabled=False`` disables stopping entirely (``update`` always returns
+    False), so the flag is a no-op unless explicitly turned on.
+
+    Args:
+        enabled:   Master switch; when False the stopper never fires.
+        patience:  Consecutive non-improving epochs tolerated before stopping.
+        min_delta: Minimum increase over the running best to count as progress.
+    """
+
+    def __init__(self, enabled: bool, patience: int, min_delta: float = 0.0) -> None:
+        self.enabled = bool(enabled) and patience > 0
+        self.patience = int(patience)
+        self.min_delta = float(min_delta)
+        self.best: float = float("-inf")
+        self.num_bad: int = 0
+        self.best_epoch: int = -1
+
+    def update(self, value: float, epoch: int) -> bool:
+        """Register an epoch's metric; return True if training should stop."""
+        if value > self.best + self.min_delta:
+            self.best = value
+            self.best_epoch = epoch
+            self.num_bad = 0
+        else:
+            self.num_bad += 1
+        if not self.enabled:
+            return False
+        return self.num_bad >= self.patience
+
+
 def build_optim_sched(model, cfg, phase: int):
     """Two-phase schedule: Phase 1 encoder frozen, Phase 2 LR differenziale.
 
@@ -223,7 +264,12 @@ def make_loaders(cfg, data_root: str, return_dtm: bool, dtm_subdir: str = "dtms"
     from src.dataset import BraTSDataset
     from src.train_utils import get_augmentation, make_generator, seed_worker
 
-    aug = get_augmentation(p=cfg.augment_prob, with_dtm=return_dtm)
+    aug = get_augmentation(
+        p=cfg.augment_prob,
+        with_dtm=return_dtm,
+        strength=getattr(cfg, "augment_strength", 1.0),
+        intensity=getattr(cfg, "augment_intensity", False),
+    )
 
     def _ds(split, augment):
         kwargs = {}
@@ -305,7 +351,13 @@ def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
 
     train_loader, val_loader = make_loaders(cfg, data_root, return_dtm=False)
 
+    stopper = _EarlyStopper(cfg.early_stopping, cfg.es_patience, cfg.es_min_delta)
+    if cfg.early_stopping:
+        print(f"  [early-stopping] ON — monitor=val_fg_dice patience={cfg.es_patience} "
+              f"min_delta={cfg.es_min_delta} (Phase 2 only)")
+
     best_fg, best_metrics, g, history = -1.0, {}, 0, []
+    stopped = False
     for phase, n_ep in [(1, cfg.phase1_epochs), (2, cfg.phase2_epochs)]:
         opt, sched = build_optim_sched(model, cfg, phase)
         for e in range(n_ep):
@@ -321,6 +373,16 @@ def train_model(arch: str, cfg, device, data_root: str, ckpt_root: str,
                 save_checkpoint(os.path.join(ckpt_dir, "best.pth"), model, opt, sched, g, va)
             save_checkpoint(os.path.join(ckpt_dir, "last.pth"), model, opt, sched, g, va)
             g += 1
+            # Early stopping is evaluated only during Phase 2 (Phase 1 is a
+            # fixed warm-up); the global best above is untouched by it.
+            if phase == 2 and stopper.update(fg, g - 1):
+                print(f"  [early-stopping] stop a epoch {g-1}: nessun miglioramento "
+                      f"del val fg-Dice per {cfg.es_patience} epoche "
+                      f"(best={stopper.best:.4f} @ ep{stopper.best_epoch}).")
+                stopped = True
+                break
+        if stopped:
+            break
     _save_history(ckpt_dir, history)
 
     _report_vram(device)
@@ -401,7 +463,13 @@ def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
 
     train_loader, val_loader = make_loaders(cfg, data_root, return_dtm=True)
 
+    stopper = _EarlyStopper(cfg.early_stopping, cfg.es_patience, cfg.es_min_delta)
+    if cfg.early_stopping:
+        print(f"  [early-stopping] ON — monitor=val_fg_dice patience={cfg.es_patience} "
+              f"min_delta={cfg.es_min_delta} (Phase 2 only)")
+
     best_fg, best_metrics, g, history = -1.0, {}, 0, []
+    stopped = False
     for phase, n_ep in [(1, cfg.phase1_epochs), (2, cfg.phase2_epochs)]:
         opt, sched = build_optim_sched(model, cfg, phase)
         for e in range(n_ep):
@@ -419,6 +487,14 @@ def _train_gsl(arch, model, cfg, device, data_root, ckpt_dir,
                 save_checkpoint(os.path.join(ckpt_dir, "best.pth"), model, opt, sched, g, va)
             save_checkpoint(os.path.join(ckpt_dir, "last.pth"), model, opt, sched, g, va)
             g += 1
+            if phase == 2 and stopper.update(fg, g - 1):
+                print(f"  [early-stopping] stop a epoch {g-1}: nessun miglioramento "
+                      f"del val fg-Dice per {cfg.es_patience} epoche "
+                      f"(best={stopper.best:.4f} @ ep{stopper.best_epoch}).")
+                stopped = True
+                break
+        if stopped:
+            break
     _save_history(ckpt_dir, history)
 
     _report_vram(device)
@@ -605,6 +681,41 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help="Run minimo: 1 epoca per fase, batch ridotto, encoder leggero (config A). "
                         "Per verificare che tutto giri prima del run vero.")
 
+    # ── Run isolation (per confronto tra prove, senza sovrascrivere) ──────
+    p.add_argument("--run-name", default=None,
+                   help="Etichetta della prova. Se impostata, i checkpoint vanno in "
+                        "<ckpt-root>/<run-name>/<arch> e le metriche 3D in "
+                        "evaluation_outputs/<run-name>/, cosi' i run vecchi NON vengono "
+                        "sovrascritti e restano confrontabili.")
+
+    # ── Leve anti-overfitting (parametriche) ─────────────────────────────
+    p.add_argument("--early-stopping", dest="early_stopping", action="store_true",
+                   help="Attiva early stopping sul val fg-Dice (solo Phase 2).")
+    p.add_argument("--es-patience", type=int, default=None,
+                   help="Epoche senza miglioramento prima di fermarsi (default: config=6).")
+    p.add_argument("--es-min-delta", type=float, default=None,
+                   help="Miglioramento minimo del val fg-Dice per contare come progresso.")
+
+    p.add_argument("--weight-decay", type=float, default=None,
+                   help="Override del weight decay AdamW (regolarizzazione L2).")
+    p.add_argument("--encoder-lr-mult", type=float, default=None,
+                   help="Moltiplicatore LR encoder in Phase 2 (piu' basso = encoder piu' frenato).")
+    p.add_argument("--lr-phase2", type=float, default=None,
+                   help="Override dell'LR base di Phase 2.")
+    p.add_argument("--phase1-epochs", type=int, default=None,
+                   help="Override delle epoche di Phase 1 (warm-up).")
+    p.add_argument("--phase2-epochs", type=int, default=None,
+                   help="Override delle epoche di Phase 2 (alias di --epochs).")
+
+    p.add_argument("--augment-prob", type=float, default=None,
+                   help="Probabilita' per-transform dell'augmentation (default: config=0.5).")
+    p.add_argument("--augment-strength", type=float, default=None,
+                   help="Scala la magnitudine dell'augmentation geometrica (1.0=legacy, >1 piu' forte).")
+    p.add_argument("--augment-intensity", dest="augment_intensity", action="store_true",
+                   help="Aggiunge rumore/contrasto z-score-safe all'augmentation (solo baseline, no-DTM).")
+
+    p.set_defaults(early_stopping=False, augment_intensity=False)
+
     return p.parse_args(argv)
 
 
@@ -637,8 +748,34 @@ def main(argv: Optional[List[str]] = None) -> int:
                               phase1_epochs=1, phase2_epochs=1))
     if args.batch_size is not None:
         overrides["batch_size"] = args.batch_size
+    # --epochs e --phase2-epochs sono alias; --phase2-epochs ha la precedenza.
     if args.epochs is not None:
         overrides["phase2_epochs"] = args.epochs
+    if args.phase2_epochs is not None:
+        overrides["phase2_epochs"] = args.phase2_epochs
+    if args.phase1_epochs is not None:
+        overrides["phase1_epochs"] = args.phase1_epochs
+
+    # Leve anti-overfitting
+    if args.early_stopping:
+        overrides["early_stopping"] = True
+    if args.es_patience is not None:
+        overrides["es_patience"] = args.es_patience
+    if args.es_min_delta is not None:
+        overrides["es_min_delta"] = args.es_min_delta
+    if args.weight_decay is not None:
+        overrides["weight_decay"] = args.weight_decay
+    if args.encoder_lr_mult is not None:
+        overrides["encoder_lr_mult"] = args.encoder_lr_mult
+    if args.lr_phase2 is not None:
+        overrides["lr_phase2"] = args.lr_phase2
+    if args.augment_prob is not None:
+        overrides["augment_prob"] = args.augment_prob
+    if args.augment_strength is not None:
+        overrides["augment_strength"] = args.augment_strength
+    if args.augment_intensity:
+        overrides["augment_intensity"] = True
+
     cfg = TrainConfig(**overrides)
 
     print(f"Config: batch={cfg.batch_size} crop={cfg.crop_size} enc={cfg.encoder} "
@@ -655,12 +792,35 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.gsl and args.gsl_precompute:
         gsl_precompute(args.data_root, args.gsl_archive)
 
+    # 3b. Isolamento del run: se --run-name e' impostato, i checkpoint e le
+    #     metriche 3D vanno in sottocartelle dedicate, cosi' i run precedenti
+    #     restano intatti e confrontabili.
+    ckpt_root = args.ckpt_root
+    eval_out_dir: Optional[str] = None
+    if args.run_name:
+        ckpt_root = os.path.join(args.ckpt_root, args.run_name)
+        eval_out_dir = str(PROJECT_ROOT / "evaluation_outputs" / args.run_name)
+        os.makedirs(ckpt_root, exist_ok=True)
+        os.makedirs(eval_out_dir, exist_ok=True)
+        # Registra la config esatta della prova accanto ai checkpoint.
+        import json as _json
+        run_meta = {"run_name": args.run_name, "models": args.models,
+                    "gsl": args.gsl, "config": cfg.to_dict()}
+        with open(os.path.join(ckpt_root, "run_config.json"), "w") as _f:
+            _json.dump(run_meta, _f, indent=2)
+        print(f"[run] '{args.run_name}': checkpoint -> {ckpt_root}")
+        print(f"[run] '{args.run_name}': metriche 3D -> {eval_out_dir}")
+        print(f"[run] config salvata -> {os.path.join(ckpt_root, 'run_config.json')}")
+    else:
+        print("[run] nessun --run-name: uso i path di default (ATTENZIONE: puo' "
+              "sovrascrivere i run precedenti).")
+
     # 4. Training
     if args.train:
         results = {}
         for arch in args.models:
             results[arch] = train_model(
-                arch, cfg, device, args.data_root, args.ckpt_root,
+                arch, cfg, device, args.data_root, ckpt_root,
                 use_gsl=args.gsl, backup_dir=args.backup_dir,
                 gsl_alpha_min=args.gsl_alpha_min,
             )
@@ -675,13 +835,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 5. Valutazione 3D
     if args.evaluate:
-        run_evaluation(args.models, args.data_root, args.ckpt_root)
+        run_evaluation(args.models, args.data_root, ckpt_root, output_dir=eval_out_dir)
         if args.backup_dir:
-            out = PROJECT_ROOT / "evaluation_outputs"
+            out = Path(eval_out_dir) if eval_out_dir else (PROJECT_ROOT / "evaluation_outputs")
             if out.is_dir():
-                dst = os.path.join(args.backup_dir, "evaluation_outputs")
+                sub = os.path.join("evaluation_outputs", args.run_name) if args.run_name \
+                    else "evaluation_outputs"
+                dst = os.path.join(args.backup_dir, sub)
                 shutil.copytree(out, dst, dirs_exist_ok=True)
-                print(f"  [backup] evaluation_outputs → {dst}")
+                print(f"  [backup] {out} → {dst}")
     else:
         print("\n[skip] valutazione disabilitata (--no-eval).")
 

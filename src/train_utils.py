@@ -129,7 +129,12 @@ def make_generator(seed: int = 42) -> torch.Generator:
 # ---------------------------------------------------------------------------
 
 
-def get_augmentation(p: float = 0.5, with_dtm: bool = False) -> A.Compose:
+def get_augmentation(
+    p: float = 0.5,
+    with_dtm: bool = False,
+    strength: float = 1.0,
+    intensity: bool = False,
+) -> A.Compose:
     """Return a geometric-only albumentations transform pipeline.
 
     IMPORTANT — only geometric augmentations are included.
@@ -183,24 +188,67 @@ def get_augmentation(p: float = 0.5, with_dtm: bool = False) -> A.Compose:
         ]
     else:
         # Baseline regime: full geometric set (image + integer mask only).
+        # ``strength`` scales the MAGNITUDE of the continuous deformations
+        # (shift/scale/rotate limits, elastic alpha). strength=1.0 reproduces
+        # the legacy pipeline bit-for-bit; strength>1.0 = harder augmentation,
+        # a direct anti-overfitting lever. rotate_limit is capped at 45deg so a
+        # large strength cannot degenerate into near-random orientations.
+        s = max(0.0, float(strength))
         transforms = [
             A.HorizontalFlip(p=p),
             A.RandomRotate90(p=p),
             A.ShiftScaleRotate(
-                shift_limit=0.05,
-                scale_limit=0.10,
-                rotate_limit=15,
+                shift_limit=0.05 * s,
+                scale_limit=0.10 * s,
+                rotate_limit=min(15.0 * s, 45.0),
                 border_mode=0,          # cv2.BORDER_CONSTANT — fills with 0
                 p=p,
             ),
             A.ElasticTransform(
-                alpha=30.0,
+                alpha=30.0 * s,
                 sigma=5.0,
                 p=p * 0.5,              # applied less frequently (heavy op)
             ),
         ]
+        # Optional Z-score-safe intensity augmentation. Only in the NON-DTM
+        # regime: the DTM is registered as an ``image`` target, so any pixel
+        # transform would also corrupt the distance map. Additive Gaussian
+        # noise on already-normalised (mu~=0, sigma~=1) tensors is meaningful
+        # and label-preserving; the std scales with ``strength``.
+        if intensity:
+            transforms.append(_gauss_noise(std=0.05 * max(s, 1e-3), p=p))
 
     return A.Compose(transforms, additional_targets=additional_targets)
+
+
+def _gauss_noise(std: float, p: float) -> "A.BasicTransform":
+    """Version-robust additive Gaussian noise for float (z-score) images.
+
+    Albumentations renamed the noise parameterisation across releases
+    (``var_limit`` in <=1.x, ``std_range`` in the 2.x rewrite). This helper
+    constructs ``A.GaussNoise`` under whichever signature the installed version
+    exposes, targeting an additive noise standard deviation of ``std`` (in the
+    same units as the normalised intensities). Falls back gracefully so the
+    training script never crashes on a version mismatch.
+
+    Args:
+        std: Target noise standard deviation (data is ~N(0, 1) on brain voxels).
+        p:   Probability of applying the transform.
+
+    Returns:
+        A configured ``A.GaussNoise`` transform.
+    """
+    # 2.x API: std_range is expressed as a FRACTION of the data range.
+    try:
+        return A.GaussNoise(std_range=(std * 0.5, std), mean_range=(0.0, 0.0), p=p)
+    except TypeError:
+        pass
+    # 1.x API: var_limit is the VARIANCE range (std**2), mean is absolute.
+    try:
+        return A.GaussNoise(var_limit=((std * 0.5) ** 2, std ** 2), mean=0.0, p=p)
+    except TypeError:
+        # Last resort: default construction, still additive Gaussian noise.
+        return A.GaussNoise(p=p)
 
 
 # ---------------------------------------------------------------------------

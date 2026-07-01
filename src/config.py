@@ -76,6 +76,16 @@ class TrainConfig:
     encoder_lr_mult: float = 0.1      # encoder LR = lr_phase2 * this in Phase 2
     weight_decay: float = 1e-4
 
+    # ── Early stopping (anti-overfitting) ────────────────────────────────
+    # When enabled, Phase 2 terminates if the monitored val foreground Dice
+    # does not improve by > es_min_delta for `es_patience` consecutive epochs.
+    # The monitor / best-checkpoint selection stays GLOBAL across both phases
+    # (see run_pipeline); only the *termination* is confined to Phase 2, since
+    # Phase 1 is a fixed short warm-up where val is still rising.
+    early_stopping: bool = False
+    es_patience: int = 6              # epochs without improvement before stop
+    es_min_delta: float = 0.0         # minimum val fg-Dice gain to count as "better"
+
     # ── Loss ─────────────────────────────────────────────────────────────
     dice_weight: float = 1.0
     focal_weight: float = 1.0
@@ -84,6 +94,13 @@ class TrainConfig:
 
     # ── Augmentation ─────────────────────────────────────────────────────
     augment_prob: float = 0.5
+    # Scales the *magnitude* of the geometric transforms (shift/scale/rotate
+    # limits and elastic alpha). 1.0 = legacy behaviour; >1.0 = stronger.
+    augment_strength: float = 1.0
+    # If True, also add Z-score-safe intensity augmentations (additive Gaussian
+    # noise + mild multiplicative brightness/contrast) on top of the geometric
+    # set. Off by default to preserve the exact legacy pipeline.
+    augment_intensity: bool = False
 
     # ── Mixed precision ──────────────────────────────────────────────────
     # "fp16" matches the legacy GradScaler behaviour; "bf16" is recommended on
