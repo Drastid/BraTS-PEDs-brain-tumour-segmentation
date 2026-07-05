@@ -1,0 +1,45 @@
+# requirements.txt — BraTS-PEDs 3D
+# ====================================
+# Un unico file per entrambe le fasi del progetto (Dicotomia Locale/Cloud):
+# la fase LOCALE (preprocessing: verifica label, split, riorganizzazione
+# volumi) e la fase COLAB/A100 (training/valutazione 3D via MONAI) usano
+# sottoinsiemi diversi di queste dipendenze, ma un solo file resta piu'
+# semplice da installare per intero in entrambi gli ambienti
+# (`pip install -r requirements.txt`), a scapito di un file leggermente
+# piu' pesante del minimo stretto per la sola fase locale.
+#
+# Le versioni minime indicate sono quelle EFFETTIVAMENTE testate nella
+# suite di test locale del progetto (32/32 test passati — si veda
+# pipeline3D.md, Punti 3-7). Nessun pin esatto su torch: su Colab si installa
+# la build con supporto CUDA (diversa dalla build CPU-only usata qui in
+# locale per gli smoke test), quindi si vincola solo la versione minima.
+
+# --- Fase LOCALE: preprocessing (verifica label, split, riorganizzazione) ---
+# Usate da: scripts/verify_label_mapping.py, scripts/generate_split.py,
+# scripts/reorganize_volumes.py, src/dataset.py.
+nibabel>=5.4
+numpy>=2.0
+scipy>=1.18
+scikit-learn>=1.9   # sklearn.model_selection.train_test_split (generate_split.py)
+tqdm>=4.68
+
+# --- Fase COLAB/A100: training e valutazione 3D (MONAI) ---
+# Usate da: src/models3d.py, src/losses_3d.py, src/losses_monai.py,
+# src/metrics_3d.py, src/transforms.py, src/transforms_3d.py,
+# src/dataset_3d.py, src/optim_3d.py, src/train_3d.py, src/eval_3d.py,
+# run_pipeline_3d.py.
+torch>=2.0
+monai>=1.3
+einops>=0.8          # richiesto da monai.networks.nets.SwinUNETR
+
+# huggingface_hub: necessario SOLO se si sceglie la fonte BrainSegFounder
+# (SwinUNETR fine-tuned su BraTS adulti, distribuito su HuggingFace) per i
+# pesi pre-addestrati di SwinUNETR — l'alternativa (pesi SSL grezzi NVIDIA
+# model_swinvit.pt) non ne ha bisogno. src/models3d.py::load_pretrained_3d
+# e' comunque agnostico rispetto alla fonte (roadmap §3.4): incluso qui
+# preventivamente per non dover rieditare questo file quando si decidera'
+# la fonte specifica su Colab.
+huggingface_hub>=0.20
+
+# --- Testing (entrambe le fasi) ---
+pytest>=8.0

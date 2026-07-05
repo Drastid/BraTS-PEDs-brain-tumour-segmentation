@@ -1,0 +1,24 @@
+# Dataset (raw + processed) — never versioned, only local/Colab paths
+data/
+
+# Pretrained weights — large binaries, downloaded on demand
+weights/
+
+# Training artifacts
+checkpoints/
+evaluation_outputs/
+*.pth
+*.pt
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.egg-info/
+
+# Markdown 
+*.md
+
+# OS / editor
+.DS_Store
+Thumbs.db
