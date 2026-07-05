@@ -41,9 +41,9 @@ import torch.nn as nn
 # Nome del modulo "head" (ultimo layer di output) per ciascuna architettura,
 # nella stessa convenzione di naming di arch usata da src/models3d.py.
 _HEAD_MODULE_NAMES: Dict[str, str] = {
-    "unet": "output_block",  # DynUNet
-    "fpn": "conv_final",  # SegResNet (ex-FPN)
-    "segformer": "out",  # SwinUNETR (ex-SegFormer)
+    "dynunet": "output_block",
+    "segresnet": "conv_final",
+    "swinunetr": "out",
 }
 
 
@@ -52,8 +52,8 @@ def _get_head_module(model: nn.Module, arch: str) -> nn.Module:
 
     Args:
         model: Modello costruito da src.models3d.build_model_3d.
-        arch:  Uno tra "unet", "fpn", "segformer" (stessa convenzione di
-               src.models3d.ARCH_NAMES).
+        arch:  Uno tra "dynunet", "segresnet", "swinunetr" (stessa convenzione
+               di src.models3d.ARCH_NAMES).
 
     Returns:
         Il nn.Module della head.
@@ -88,7 +88,7 @@ def split_backbone_head_params(
 
     Args:
         model: Modello costruito da build_model_3d.
-        arch:  "unet" | "fpn" | "segformer".
+        arch:  "dynunet" | "segresnet" | "swinunetr".
         extra_head_param_names: Nomi (convenzione model.state_dict()/
             model.named_parameters()) di parametri AGGIUNTIVI da trattare come
             head, anche se non appartengono al modulo di output. Pensato per i
@@ -131,7 +131,7 @@ def set_backbone_trainable(
 
     Args:
         model:     Modello costruito da build_model_3d.
-        arch:      "unet" | "fpn" | "segformer".
+        arch:      "dynunet" | "segresnet" | "swinunetr".
         trainable: True -> il backbone e' allenabile; False -> congelato
                    (requires_grad=False su tutti i parametri fuori dalla head).
         extra_head_param_names: Si veda split_backbone_head_params — questi
@@ -161,7 +161,7 @@ def build_optimizer_3d(
         model:            Modello costruito da build_model_3d (con pesi
                           pre-addestrati gia' caricati via load_pretrained_3d,
                           se applicabile).
-        arch:             "unet" | "fpn" | "segformer".
+        arch:             "dynunet" | "segresnet" | "swinunetr".
         base_lr:          LR di riferimento (applicato per intero alla head).
         backbone_lr_mult: Moltiplicatore per il LR del backbone
                           (backbone_lr = base_lr * backbone_lr_mult). Default

@@ -40,12 +40,11 @@ import torch
 import torch.nn as nn
 from monai.networks.nets import DynUNet, SegResNet, SwinUNETR
 
-# Nomi degli slot mantenuti identici al vecchio progetto 2D (unet/fpn/segformer)
-# per non rompere la convenzione di naming di checkpoint/run_pipeline. Ciò che
-# restituiscono e' pero' DynUNet / SegResNet / SwinUNETR (si veda il docstring
-# del modulo). Se preferisci nomi parlanti, valuta di rinominarli in un punto
-# successivo e aggiornare i riferimenti in run_pipeline_3d.
-ARCH_NAMES = ("unet", "fpn", "segformer")
+# Nomi architetturali reali (non piu' gli slot ereditati dal vecchio progetto
+# 2D unet/fpn/segformer): allineati a MONAI, cosi' --arch e' immediatamente
+# riconoscibile senza dover consultare la tabella di corrispondenza 2D->3D nel
+# docstring del modulo.
+ARCH_NAMES = ("dynunet", "segresnet", "swinunetr")
 
 
 def build_model_3d(
@@ -57,8 +56,7 @@ def build_model_3d(
     """Costruisce una delle tre architetture 3D con testa a `num_classes` canali.
 
     Args:
-        arch:        Una tra "unet" (-> DynUNet), "fpn" (-> SegResNet, ex-FPN),
-                     "segformer" (-> SwinUNETR, ex-SegFormer).
+        arch:        Una tra "dynunet", "segresnet", "swinunetr".
         in_channels: Numero di modalita' MRI in input (default 4: t1c,t1n,t2f,t2w).
         num_classes: Numero di classi di output (default 5: BG,ET,NET,CC,ED).
         roi:         Dimensione della patch 3D attesa in training/inference
@@ -74,7 +72,7 @@ def build_model_3d(
     Raises:
         ValueError: se `arch` non e' uno dei tre nomi attesi.
     """
-    if arch == "unet":
+    if arch == "dynunet":
         # DynUNet stile nnU-Net: 5 livelli (1 stem + 4 downsampling stride-2)
         # => richiede input divisibile per 16 su ogni asse spaziale.
         return DynUNet(
@@ -86,7 +84,7 @@ def build_model_3d(
             upsample_kernel_size=[2, 2, 2, 2],
             deep_supervision=False,
         )
-    if arch == "fpn":
+    if arch == "segresnet":
         # SegResNet — rimpiazza la FPN 2D (vedi docstring del modulo / road_3D.md §3.2)
         return SegResNet(
             spatial_dims=3,
@@ -96,7 +94,7 @@ def build_model_3d(
             blocks_down=(1, 2, 2, 4),
             blocks_up=(1, 1, 1),
         )
-    if arch == "segformer":
+    if arch == "swinunetr":
         # SwinUNETR — rimpiazza SegFormer 2D; vincolo: patch divisibile per 32.
         return SwinUNETR(
             in_channels=in_channels,

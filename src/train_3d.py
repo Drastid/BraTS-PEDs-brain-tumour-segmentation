@@ -58,6 +58,76 @@ def set_seed(seed: int = 42, deterministic: bool = True) -> None:
 # ---------------------------------------------------------------------------
 
 
+class EarlyStopper3D:
+    """Tracks the best monitored metric and decides when to stop (roadmap:
+    porting del pattern master/run_pipeline.py::_EarlyStopper per la pipeline
+    3D, che finora non aveva alcuna logica anti-overfitting oltre al weight
+    decay).
+
+    Progettata per una metrica MASSIMIZZATA (qui: dice_mean_fg, la media Dice
+    delle sub-regioni foreground pediatriche — stesso ruolo di val_fg_dice nel
+    2D). ``update`` va chiamato una volta per epoca col valore corrente e
+    ritorna ``True`` quando il training deve fermarsi, cioe' quando la metrica
+    non e' migliorata di piu' di ``min_delta`` per ``patience`` epoche
+    consecutive.
+
+    La selezione del miglior checkpoint (best.pth) resta INDIPENDENTE
+    dall'early stopping — si veda run_pipeline_3d.py: best.pth e' sempre
+    salvato sul miglior dice_mean_fg visto, l'early stopping decide solo
+    QUANDO interrompere il loop, non quale peso tenere.
+
+    Args:
+        enabled:   Master switch; se False lo stopper non scatta mai.
+        patience:  Epoche consecutive senza miglioramento tollerate prima di
+                   fermarsi.
+        min_delta: Incremento minimo sul best corrente per contare come
+                   progresso.
+    """
+
+    def __init__(self, enabled: bool, patience: int, min_delta: float = 0.0) -> None:
+        self.enabled = bool(enabled) and patience > 0
+        self.patience = int(patience)
+        self.min_delta = float(min_delta)
+        self.best: float = float("-inf")
+        self.num_bad: int = 0
+        self.best_epoch: int = -1
+
+    def update(self, value: float, epoch: int) -> bool:
+        """Registra la metrica di un'epoca; ritorna True se il training deve fermarsi."""
+        if value > self.best + self.min_delta:
+            self.best = value
+            self.best_epoch = epoch
+            self.num_bad = 0
+        else:
+            self.num_bad += 1
+        if not self.enabled:
+            return False
+        return self.num_bad >= self.patience
+
+
+def monitor_value(history: list[dict], window: int) -> float:
+    """Media mobile di dice_mean_fg sulle ultime ``window`` epoche (default
+    comportamento identico a window=1: solo il valore dell'epoca corrente).
+
+    Stessa idea di master/run_pipeline.py::_monitor_value: smussa il rumore
+    epoca-per-epoca della metrica di validazione prima di decidere se e' un
+    miglioramento reale (rilevante soprattutto con patch-based training, dove
+    la varianza tra epoche puo' essere piu' alta che nel 2D full-slice).
+
+    Args:
+        history: Lista di dict per-epoca, ciascuno con almeno la chiave
+                 "val" -> {"dice_mean_fg": float, ...} (formato usato da
+                 run_pipeline_3d.py).
+        window:  Numero di epoche piu' recenti su cui mediare (>=1).
+
+    Returns:
+        Media di dice_mean_fg sulle ultime `window` epoche disponibili.
+    """
+    w = max(1, int(window))
+    vals = [r["val"]["dice_mean_fg"] for r in history[-w:]]
+    return sum(vals) / len(vals)
+
+
 class MetricTracker:
     """Accumula medie mobili per un insieme arbitrario di metriche scalari."""
 

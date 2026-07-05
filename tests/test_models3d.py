@@ -61,7 +61,7 @@ def test_load_pretrained_nvidia_ssl_style_checkpoint(tmp_path) -> None:
     patch_embed a 1 canale di input (pretraining single-modality) mentre qui
     servono 4 modalita' — quel layer deve restare shape-mismatch e quindi
     NON caricato, il resto dell'encoder swinViT si'."""
-    model = build_model_3d("segformer", in_channels=IN_CHANNELS, num_classes=NUM_CLASSES)
+    model = build_model_3d("swinunetr", in_channels=IN_CHANNELS, num_classes=NUM_CLASSES)
     model_sd = model.state_dict()
 
     fake_sd = {}
@@ -107,7 +107,7 @@ def test_load_pretrained_huggingface_style_checkpoint(tmp_path) -> None:
     prefisso 'net.', head finale a 3 canali (TC/WT/ET adulti) mentre qui
     servono 5 classi pediatriche — solo la head deve restare esclusa, tutto
     il resto (encoder+decoder) deve caricare."""
-    model = build_model_3d("segformer", in_channels=IN_CHANNELS, num_classes=NUM_CLASSES)
+    model = build_model_3d("swinunetr", in_channels=IN_CHANNELS, num_classes=NUM_CLASSES)
     model_sd = model.state_dict()
 
     fake_sd = {}

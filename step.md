@@ -265,7 +265,7 @@ puntuale.
       backup, per verificare che la pipeline giri senza OOM né errori):
       ```bash
       !cd {LOCAL_ROOT} && python run_pipeline_3d.py \
-          --arch unet \
+          --arch dynunet \
           --loss dice_focal \
           --data-root {DATA_ROOT}/processed_3d \
           --roi 64 64 64 \
@@ -283,14 +283,14 @@ puntuale.
         all'avvio (conferma che la GPU è effettivamente in uso, non CPU).
       - Una riga `[ep 1/1] train_loss=... val_dice_fg=... val_hd95_fg=...`
         stampata senza eccezioni.
-      - File creati in `{LOCAL_ROOT}/checkpoints/smoke_test/unet_dice_focal/`
+      - File creati in `{LOCAL_ROOT}/checkpoints/smoke_test/dynunet_dice_focal/`
         (`best.pth`, `last.pth`, `history.json`).
 
 - [ ] **4.2** Ripeti lo smoke test con `--loss gsl` per verificare anche il
       ramo della Generalized Surface Loss (calcolo DTM on-the-fly incluso):
       ```bash
       !cd {LOCAL_ROOT} && python run_pipeline_3d.py \
-          --arch unet --loss gsl \
+          --arch dynunet --loss gsl \
           --data-root {DATA_ROOT}/processed_3d \
           --roi 64 64 64 --batch-size 1 --num-samples 1 --num-workers 2 \
           --epochs 1 --pretrained none --run-name smoke_test --no-evaluate
@@ -299,11 +299,13 @@ puntuale.
 - [ ] **4.3** Se entrambi gli smoke test passano senza errori, procedi con il
       **training vero** sulla A100, con backup su Drive e valutazione
       automatica finale (default ON), ad esempio per la baseline
-      DiceFocalLoss su SegResNet (sostituto 3D della FPN) con pesi
-      pre-addestrati:
+      DiceFocalLoss su SegResNet con pesi pre-addestrati. I flag pesi sono
+      **specifici per architettura** (`--pretrained-swinunetr`,
+      `--pretrained-segresnet` — nessun `--weights-path` condiviso, dato che
+      un checkpoint SwinUNETR non ha alcuna chiave in comune con SegResNet):
       ```bash
       !cd {LOCAL_ROOT} && python run_pipeline_3d.py \
-          --arch fpn \
+          --arch segresnet \
           --loss dice_focal \
           --data-root {DATA_ROOT}/processed_3d \
           --roi 128 128 128 \
@@ -312,23 +314,31 @@ puntuale.
           --num-workers 4 \
           --epochs 100 \
           --pretrained auto \
-          --weights-path /content/drive/MyDrive/BraTS_Project/pretrained/<nome_file_pesi> \
+          --pretrained-segresnet /content/drive/MyDrive/BraTS_Project/pretrained/<nome_file_pesi> \
           --run-name run01 \
           --backup-dir /content/drive/MyDrive/BraTS_Project/checkpoints
       ```
       Se non hai ancora caricato pesi pre-addestrati (punto 1.6 saltato),
-      ometti `--weights-path` e usa `--pretrained none` per un training da
-      zero.
+      ometti `--pretrained-segresnet`/`--pretrained-swinunetr` e usa
+      `--pretrained none` per un training da zero. DynUNet non ha un flag
+      pesi dedicato: parte sempre da zero (nessun checkpoint compatibile
+      individuato per questa architettura).
+
+      Per allenare tutte e tre le architetture in sequenza (dynunet,
+      segresnet, swinunetr), sostituisci `--arch segresnet` con `--all`:
+      ciascuna finisce nella propria sottocartella
+      `<run-name>/<arch>_<loss>/`, passando `--pretrained-segresnet`/
+      `--pretrained-swinunetr` per i rispettivi checkpoint.
 
 - [ ] **4.4** Monitora periodicamente l'esecuzione (Colab disconnette sessioni
       idle): controlla che `--backup-dir` stia effettivamente scrivendo
       `best.pth`/`last.pth`/`history.json` su Drive dopo ogni epoca stampata,
       così da non perdere progressi in caso di disconnessione improvvisa.
 
-- [ ] **4.5** A fine training, verifica `evaluation_outputs/run01/fpn_dice_focal/test_3d_metrics.json`
+- [ ] **4.5** A fine training, verifica `evaluation_outputs/run01/segresnet_dice_focal/test_3d_metrics.json`
       (creato automaticamente da `--evaluate`, default ON) per le metriche
       Dice/HD95 finali per-sottoregione sul test set, e le predizioni NIfTI
-      esportate in `evaluation_outputs/run01/fpn_dice_focal/nifti_predictions/`.
+      esportate in `evaluation_outputs/run01/segresnet_dice_focal/nifti_predictions/`.
 
 - [ ] **4.6** Se durante uno smoke test trovi un bug da correggere: **non
       editare i file direttamente dentro `/content/BraTS-PEDs-3D/` su Colab**
@@ -343,7 +353,8 @@ puntuale.
 ---
 
 Al termine di ogni run, ripeti la Fase 4.3 cambiando `--arch`/`--loss`/
-`--run-name` per le altre combinazioni pianificate (es. `segformer`+`gsl`,
-`unet`+`gsl`, ecc.), riutilizzando lo stesso ambiente Colab già preparato
-nelle Fasi 1–2 senza doverle rifare (basta un `git pull` se nel frattempo hai
+`--run-name` per le altre combinazioni pianificate (es. `swinunetr`+`gsl`,
+`dynunet`+`gsl`, ecc.), oppure usa `--all` per allenarle tutte in sequenza in
+un solo comando, riutilizzando lo stesso ambiente Colab già preparato nelle
+Fasi 1–2 senza doverle rifare (basta un `git pull` se nel frattempo hai
 aggiornato il codice su GitHub).
