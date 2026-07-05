@@ -58,5 +58,76 @@ def test_freeze_unfreeze_backbone(arch: str) -> None:
     assert all(p.requires_grad for p in backbone)
 
 
+# ---------------------------------------------------------------------------
+# extra_head_param_names — parametri non pre-addestrati FUORI dalla head
+# strutturale (es. patch_embed di SwinUNETR con model_swinvit.pt, escluso da
+# load_pretrained_3d per mismatch canali 1 vs 4). Devono ricevere lo stesso
+# trattamento della head: LR pieno, mai congelati durante il warm-up.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("arch", ARCH_NAMES)
+def test_extra_head_param_names_moves_params_into_head_group(arch: str) -> None:
+    model = build_model_3d(arch, num_classes=5, roi=(64, 64, 64))
+
+    # Prendo un parametro qualunque del backbone "di base" (non della head
+    # strutturale) e lo forzo come extra head param, simulando un layer
+    # scartato per shape mismatch fuori dalla head (es. patch_embed).
+    backbone_before, head_before = split_backbone_head_params(model, arch)
+    assert len(backbone_before) > 1, f"[{arch}] serve almeno 2 parametri nel backbone per questo test"
+
+    name_to_param = dict(model.named_parameters())
+    param_to_name = {id(p): n for n, p in name_to_param.items()}
+    extra_name = param_to_name[id(backbone_before[0])]
+
+    backbone_after, head_after = split_backbone_head_params(
+        model, arch, extra_head_param_names=[extra_name],
+    )
+
+    assert id(backbone_before[0]) not in {id(p) for p in backbone_after}
+    assert id(backbone_before[0]) in {id(p) for p in head_after}
+    assert len(backbone_after) + len(head_after) == len(backbone_before) + len(head_before)
+
+
+@pytest.mark.parametrize("arch", ARCH_NAMES)
+def test_extra_head_param_names_gets_full_lr(arch: str) -> None:
+    model = build_model_3d(arch, num_classes=5, roi=(64, 64, 64))
+    base_lr = 1e-3
+
+    backbone_before, _ = split_backbone_head_params(model, arch)
+    name_to_param = dict(model.named_parameters())
+    param_to_name = {id(p): n for n, p in name_to_param.items()}
+    extra_name = param_to_name[id(backbone_before[0])]
+
+    opt = build_optimizer_3d(
+        model, arch, base_lr=base_lr, backbone_lr_mult=0.1,
+        extra_head_param_names=[extra_name],
+    )
+    backbone_group, head_group = opt.param_groups
+
+    assert id(backbone_before[0]) not in {id(p) for p in backbone_group["params"]}
+    assert id(backbone_before[0]) in {id(p) for p in head_group["params"]}
+    assert head_group["lr"] == pytest.approx(base_lr)
+
+
+@pytest.mark.parametrize("arch", ARCH_NAMES)
+def test_extra_head_param_names_survives_freeze(arch: str) -> None:
+    """Il parametro forzato come 'head' non deve MAI essere congelato dal
+    warm-up, anche se strutturalmente appartiene al backbone."""
+    model = build_model_3d(arch, num_classes=5, roi=(64, 64, 64))
+
+    backbone_before, _ = split_backbone_head_params(model, arch)
+    name_to_param = dict(model.named_parameters())
+    param_to_name = {id(p): n for n, p in name_to_param.items()}
+    extra_name = param_to_name[id(backbone_before[0])]
+    extra_param = backbone_before[0]
+
+    set_backbone_trainable(model, arch, trainable=False, extra_head_param_names=[extra_name])
+
+    assert extra_param.requires_grad, (
+        f"[{arch}] parametro extra_head_param_names non deve essere congelato dal warm-up"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

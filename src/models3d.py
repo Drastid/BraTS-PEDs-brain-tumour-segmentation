@@ -113,6 +113,73 @@ def build_model_3d(
 # ---------------------------------------------------------------------------
 
 
+# Prefissi noti da RIMUOVERE dalle chiavi del checkpoint (wrapper con cui il
+# training originale ha salvato il modello: DataParallel -> "module.",
+# wrapper HuggingFace/BrainSegFounder -> "net.").
+_STRIP_CANDIDATES = ("", "module.", "net.", "net.module.", "module.net.")
+
+# Prefissi noti da AGGIUNGERE dopo lo strip: necessario per checkpoint
+# encoder-only (es. pretraining SSL NVIDIA su SwinUNETR) le cui chiavi, una
+# volta rimosso il wrapper di salvataggio, corrispondono al sottomodulo
+# `swinViT` del modello MONAI ma senza quel prefisso esplicito.
+_ADD_CANDIDATES = ("", "swinViT.")
+
+# Rinominazioni interne note tra versioni di MONAI: il checkpoint SSL NVIDIA
+# per SwinUNETR (model_swinvit.pt) e' stato pubblicato per una versione di
+# MONAI precedente a quella installata qui (1.6.0), che nel frattempo ha
+# rinominato i layer della MLP dei blocchi Swin da "mlp.fc1"/"mlp.fc2"
+# (nomenclatura timm) a "mlp.linear1"/"mlp.linear2". Le shape sono identiche:
+# e' un puro rename, sicuro da applicare sempre.
+_SUBSTRING_RENAMES = (
+    (".mlp.fc1.", ".mlp.linear1."),
+    (".mlp.fc2.", ".mlp.linear2."),
+)
+
+
+def _apply_known_renames(key: str) -> str:
+    for old, new in _SUBSTRING_RENAMES:
+        if old in key:
+            key = key.replace(old, new)
+    return key
+
+
+def _best_prefix_for(sd_keys: Iterable[str], model_keys: set) -> tuple[str, str]:
+    """Sceglie, tra le combinazioni (strip, add) note, quella che massimizza il
+    numero di chiavi combacianti col modello target.
+
+    Necessario perche' checkpoint di fonti diverse annidano lo stesso backbone
+    SwinUNETR in modo diverso:
+      - pesi SSL NVIDIA (`model_swinvit.pt`): encoder-only, salvato da
+        DataParallel -> chiavi "module.patch_embed...."; dopo lo strip di
+        "module." mancherebbe ancora il prefisso "swinViT." del sottomodulo
+        MONAI, quindi va sia rimosso "module." SIA aggiunto "swinViT.".
+      - checkpoint HuggingFace stile BrainSegFounder (`model_best_fold_0.pth`):
+        encoder+decoder completo, wrapper "net.swinViT...."; qui basta
+        rimuovere "net." (il decoder gia' combacia senza aggiunte).
+    Nessuna delle due e' un sotto-caso dell'altra, quindi si prova ogni
+    combinazione e si tiene quella con piu' match esatti.
+    """
+    best_combo = ("", "")
+    best_score = -1
+    for strip_p in _STRIP_CANDIDATES:
+        for add_p in _ADD_CANDIDATES:
+            stripped = set()
+            for k in sd_keys:
+                s = k[len(strip_p):] if strip_p and k.startswith(strip_p) else k
+                stripped.add(_apply_known_renames(add_p + s))
+            score = len(stripped & model_keys)
+            if score > best_score:
+                best_score = score
+                best_combo = (strip_p, add_p)
+    return best_combo
+
+
+def _remap_key(key: str, strip_prefix: str, add_prefix: str) -> str:
+    if strip_prefix and key.startswith(strip_prefix):
+        key = key[len(strip_prefix):]
+    return _apply_known_renames(add_prefix + key)
+
+
 def load_pretrained_3d(
     model: nn.Module,
     ckpt_path: str,
@@ -121,7 +188,7 @@ def load_pretrained_3d(
     strip_module_prefix: bool = True,
     map_location: str = "cpu",
     verbose: bool = True,
-) -> nn.Module:
+) -> tuple[nn.Module, list[str]]:
     """Carica pesi pre-addestrati in un modello 3D, saltando i tensori incompatibili.
 
     Funzione generica e agnostica rispetto alla fonte del checkpoint: funziona
@@ -137,6 +204,13 @@ def load_pretrained_3d(
     head viene automaticamente esclusa perche' la sua shape non combacia, e resta
     quindi inizializzata da zero (init di default del costruttore MONAI),
     mentre il resto del backbone eredita i pesi.
+
+    Il prefisso di naming dei parametri (es. "module." per checkpoint SSL
+    NVIDIA salvati da DataParallel, "net." per checkpoint HuggingFace stile
+    BrainSegFounder che avvolgono il modello in un wrapper) viene rilevato
+    AUTOMATICAMENTE provando ogni candidato noto e tenendo quello che produce
+    il maggior numero di chiavi combacianti con il modello target — non si
+    assume una fonte specifica.
 
     Args:
         model:          Modello MONAI gia' costruito (es. via build_model_3d),
@@ -155,9 +229,9 @@ def load_pretrained_3d(
                         SIA gia' direttamente lo state_dict. Se la chiave data
                         non esiste, si tenta un fallback automatico su "model"
                         e poi si assume il dict grezzo.
-        strip_module_prefix: Se True, rimuove un eventuale prefisso "module."
-                        (tipico di checkpoint salvati da nn.DataParallel /
-                        DistributedDataParallel) prima del confronto.
+        strip_module_prefix: Se True, rileva e rimuove automaticamente il
+                        prefisso di naming del checkpoint (non solo "module.":
+                        si veda _best_prefix_for) prima del confronto.
         map_location:   Device di caricamento del checkpoint (default "cpu",
                         sicuro sia su macchine senza GPU sia come primo step
                         prima di spostare il modello su CUDA).
@@ -165,11 +239,31 @@ def load_pretrained_3d(
                         stati caricati/saltati.
 
     Returns:
-        Lo stesso `model` in input, con i pesi compatibili caricati in-place
-        (`strict=False`: i tensori mancanti — tipicamente la head — restano
-        con l'inizializzazione originale del costruttore).
+        Tupla (model, unmatched_param_names):
+          - model: lo stesso oggetto in input, con i pesi compatibili
+            caricati in-place (`strict=False`: i tensori mancanti restano
+            con l'inizializzazione originale del costruttore).
+          - unmatched_param_names: nomi (convenzione model.state_dict()) di
+            TUTTI i parametri del modello rimasti non inizializzati dal
+            checkpoint — sia perche' assenti nel file, sia perche' scartati
+            per shape mismatch (es. head a num_classes diverso, ma anche un
+            layer di ingresso come patch_embed quando il checkpoint ha un
+            numero di canali di input diverso, come nel caso dei pesi SSL
+            NVIDIA pre-addestrati single-modality). Il chiamante (tipicamente
+            src/optim_3d.py) deve trattare questi parametri come "head"
+            indipendentemente dalla loro posizione architetturale: sono
+            inizializzati a caso quanto la head, quindi vanno allenati con lo
+            stesso LR pieno e non vanno mai congelati durante un warm-up.
     """
-    raw = torch.load(ckpt_path, map_location=map_location)
+    try:
+        raw = torch.load(ckpt_path, map_location=map_location, weights_only=True)
+    except Exception:
+        # Alcuni checkpoint (es. HuggingFace/BrainSegFounder) annidano scalari
+        # numpy (es. "best_acc") non nella allowlist di default di
+        # weights_only=True (PyTorch >= 2.6). Il file e' stato scaricato/copiato
+        # volontariamente dall'utente in weights/ (fonte gia' fidata), quindi il
+        # fallback a weights_only=False e' sicuro in questo contesto.
+        raw = torch.load(ckpt_path, map_location=map_location, weights_only=False)
 
     sd = raw
     if state_dict_key is not None and isinstance(raw, dict) and state_dict_key in raw:
@@ -180,11 +274,13 @@ def load_pretrained_3d(
         sd = raw["model"]
     # altrimenti: raw e' gia' lo state_dict grezzo
 
+    model_sd = model.state_dict()
+
     if strip_module_prefix:
-        sd = {(k[7:] if k.startswith("module.") else k): v for k, v in sd.items()}
+        strip_p, add_p = _best_prefix_for(sd.keys(), set(model_sd.keys()))
+        sd = {_remap_key(k, strip_p, add_p): v for k, v in sd.items()}
 
     drop_prefixes = tuple(drop_prefixes)
-    model_sd = model.state_dict()
 
     kept = {}
     skipped_shape = []
@@ -217,4 +313,4 @@ def load_pretrained_3d(
             if len(skipped_shape) > 10:
                 print(f"    ... e altri {len(skipped_shape) - 10}")
 
-    return model
+    return model, list(missing)

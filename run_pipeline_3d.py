@@ -144,8 +144,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # --- Modello + (opzionale) pesi pre-addestrati ---
     model = build_model_3d(args.arch, in_channels=4, num_classes=args.num_classes, roi=roi).to(device)
+    unmatched_param_names: list[str] = []
     if args.pretrained == "auto" and args.weights_path:
-        load_pretrained_3d(model, args.weights_path)
+        model, unmatched_param_names = load_pretrained_3d(model, args.weights_path)
     elif args.pretrained == "auto" and not args.weights_path:
         print("[warn] --pretrained=auto ma nessun --weights-path fornito: training da zero.")
 
@@ -158,9 +159,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     # --- Optimizer (LR differenziato backbone/head) ---
+    # extra_head_param_names: parametri esclusi dal caricamento pre-addestrato
+    # per shape mismatch FUORI dalla head strutturale (es. patch_embed a 1
+    # canale nel checkpoint SSL NVIDIA vs le 4 modalita' richieste qui). Sono
+    # inizializzati a caso quanto la head, quindi vanno trattati come head
+    # (LR pieno, mai congelati) — si veda src.optim_3d.split_backbone_head_params.
     optimizer = build_optimizer_3d(
         model, args.arch, base_lr=args.base_lr,
         backbone_lr_mult=args.backbone_lr_mult, weight_decay=args.weight_decay,
+        extra_head_param_names=unmatched_param_names,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
@@ -181,8 +188,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         ).to(device)
 
     # --- Warm-up opzionale a backbone congelato ---
+    # extra_head_param_names qui sotto assicura che i parametri non
+    # pre-addestrati (shape mismatch fuori dalla head, es. patch_embed) NON
+    # vengano congelati insieme al backbone: restano allenabili durante tutto
+    # il warm-up, esattamente come la head.
     if args.warmup_freeze_epochs > 0:
-        set_backbone_trainable(model, args.arch, trainable=False)
+        set_backbone_trainable(
+            model, args.arch, trainable=False, extra_head_param_names=unmatched_param_names,
+        )
 
     print(f"\n{'#'*70}\n  TRAIN 3D  arch={args.arch}  loss={args.loss}  "
           f"roi={roi}  batch={args.batch_size}  epochs={args.epochs}\n{'#'*70}")
@@ -191,7 +204,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     history: list[dict] = []
     for epoch in range(args.epochs):
         if args.warmup_freeze_epochs > 0 and epoch == args.warmup_freeze_epochs:
-            set_backbone_trainable(model, args.arch, trainable=True)
+            set_backbone_trainable(
+                model, args.arch, trainable=True, extra_head_param_names=unmatched_param_names,
+            )
 
         if args.loss == "dice_focal":
             tr_metrics = train_one_epoch_3d(

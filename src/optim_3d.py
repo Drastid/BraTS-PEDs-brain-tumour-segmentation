@@ -75,19 +75,31 @@ def _get_head_module(model: nn.Module, arch: str) -> nn.Module:
 
 
 def split_backbone_head_params(
-    model: nn.Module, arch: str
+    model: nn.Module, arch: str, extra_head_param_names: Iterable[str] = (),
 ) -> tuple[List[nn.Parameter], List[nn.Parameter]]:
     """Divide i parametri del modello in (backbone, head) per LR differenziato.
 
-    La head e' identificata per IDENTITA' dei tensori (id(p)), non per nome
-    stringa, cosi' la distinzione resta corretta indipendentemente da come i
-    parametri sono enumerati da .parameters() (stessa tecnica gia' usata nel
-    vecchio progetto 2D per separare encoder/decoder — si veda
+    La head "strutturale" (modulo di output dell'architettura) e' identificata
+    per IDENTITA' dei tensori (id(p)), non per nome stringa, cosi' la
+    distinzione resta corretta indipendentemente da come i parametri sono
+    enumerati da .parameters() (stessa tecnica gia' usata nel vecchio progetto
+    2D per separare encoder/decoder — si veda
     master/run_pipeline.py::build_optim_sched).
 
     Args:
         model: Modello costruito da build_model_3d.
         arch:  "unet" | "fpn" | "segformer".
+        extra_head_param_names: Nomi (convenzione model.state_dict()/
+            model.named_parameters()) di parametri AGGIUNTIVI da trattare come
+            head, anche se non appartengono al modulo di output. Pensato per i
+            nomi restituiti da src.models3d.load_pretrained_3d come
+            "unmatched_param_names": un layer come patch_embed, escluso dal
+            caricamento per shape mismatch (es. checkpoint SSL NVIDIA a 1
+            canale vs le 4 modalita' richieste qui), resta inizializzato a
+            caso esattamente come la head — merita quindi lo stesso LR pieno,
+            non il LR ridotto del backbone pre-addestrato. Default: nessuno
+            (comportamento identico a prima per checkpoint dove solo la head
+            "strutturale" e' esclusa, es. model_best_fold_0.pth).
 
     Returns:
         (backbone_params, head_params) — due liste disgiunte che coprono
@@ -96,12 +108,20 @@ def split_backbone_head_params(
     head_module = _get_head_module(model, arch)
     head_ids = {id(p) for p in head_module.parameters()}
 
+    extra_names = set(extra_head_param_names)
+    if extra_names:
+        for name, p in model.named_parameters():
+            if name in extra_names:
+                head_ids.add(id(p))
+
     backbone_params = [p for p in model.parameters() if id(p) not in head_ids]
     head_params = [p for p in model.parameters() if id(p) in head_ids]
     return backbone_params, head_params
 
 
-def set_backbone_trainable(model: nn.Module, arch: str, trainable: bool) -> None:
+def set_backbone_trainable(
+    model: nn.Module, arch: str, trainable: bool, extra_head_param_names: Iterable[str] = (),
+) -> None:
     """Congela/scongela il backbone (tutto tranne la head) per un warm-up opzionale.
 
     Analogo 3D di set_encoder_trainable() dal vecchio progetto 2D. Utile per
@@ -114,8 +134,11 @@ def set_backbone_trainable(model: nn.Module, arch: str, trainable: bool) -> None
         arch:      "unet" | "fpn" | "segformer".
         trainable: True -> il backbone e' allenabile; False -> congelato
                    (requires_grad=False su tutti i parametri fuori dalla head).
+        extra_head_param_names: Si veda split_backbone_head_params — questi
+                   parametri sono sempre esclusi dal freeze (restano
+                   allenabili) perche' inizializzati a caso, non pre-addestrati.
     """
-    backbone_params, _ = split_backbone_head_params(model, arch)
+    backbone_params, _ = split_backbone_head_params(model, arch, extra_head_param_names)
     for p in backbone_params:
         p.requires_grad = trainable
 
@@ -130,6 +153,7 @@ def build_optimizer_3d(
     base_lr: float,
     backbone_lr_mult: float = 0.1,
     weight_decay: float = 1e-4,
+    extra_head_param_names: Iterable[str] = (),
 ) -> torch.optim.Optimizer:
     """AdamW con 2 param-group: backbone a LR ridotto, head nuova a LR pieno.
 
@@ -144,11 +168,15 @@ def build_optimizer_3d(
                           0.1, stesso valore di encoder_lr_mult nel vecchio
                           progetto 2D.
         weight_decay:      Weight decay AdamW (uguale per entrambi i gruppi).
+        extra_head_param_names: Si veda split_backbone_head_params — nomi di
+                          parametri non pre-addestrati (shape mismatch fuori
+                          dalla head strutturale, es. patch_embed con
+                          model_swinvit.pt) da trattare a LR pieno.
 
     Returns:
         torch.optim.AdamW con 2 param_group: [0]=backbone, [1]=head.
     """
-    backbone_params, head_params = split_backbone_head_params(model, arch)
+    backbone_params, head_params = split_backbone_head_params(model, arch, extra_head_param_names)
     return torch.optim.AdamW(
         [
             {"params": backbone_params, "lr": base_lr * backbone_lr_mult},
