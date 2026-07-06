@@ -80,17 +80,27 @@ class SegmentationMetrics3D:
             ("background",) + tuple(FOREGROUND_CLASS_NAMES)
         )
 
+        # get_not_nans=True: oltre alla media per-classe, MONAI restituisce il
+        # "support" (numero di volumi in cui quella classe NON era degenere,
+        # cioe' non-NaN al livello raw). Serve per la semantica BraTS-standard
+        # (Opzione A, decisione utente): al livello per-volume MONAI da' gia'
+        # Dice=1 se pred e GT sono ENTRAMBE vuote per quella classe (concordano),
+        # Dice=0 se solo una e' vuota, e NaN per HD95 quando la classe e' assente.
+        # Il problema era solo nell'AGGREGAZIONE: mean_batch trasforma in 0.0
+        # (non NaN) una classe MAI presente in tutto il set, inquinando le medie.
+        # Col support possiamo riconoscere quel caso (support==0) e riportare la
+        # classe come NaN (esclusa dalle medie), invece dello 0.0 fittizio.
         self.dice_metric = DiceMetric(
             include_background=include_background,
-            reduction="none",  # nessuna riduzione: manteniamo il dettaglio per-classe
-            get_not_nans=False,
+            reduction="mean_batch",  # media sui volumi, per-classe (NaN-aware)
+            get_not_nans=True,
         )
         self.hd95_metric = HausdorffDistanceMetric(
             include_background=include_background,
             percentile=percentile,
             distance_metric=distance_metric,
-            reduction="none",
-            get_not_nans=False,
+            reduction="mean_batch",
+            get_not_nans=True,
         )
 
     def update(self, logits: torch.Tensor, targets: torch.Tensor) -> None:
@@ -112,29 +122,48 @@ class SegmentationMetrics3D:
     def aggregate_and_reset(self) -> Dict[str, float]:
         """Calcola le medie finali per-classe e resetta gli accumulatori.
 
+        Semantica BraTS-standard (Opzione A): una sub-regione MAI presente in
+        tutto il set valutato (support==0) e' riportata come NaN — "non
+        applicabile" — ed e' ESCLUSA dalle medie foreground, invece di entrarci
+        come 0.0 fittizio (che falserebbe verso il basso dice_mean_fg e verso
+        lo zero-perfetto hd95_mean_fg). Le classi presenti in almeno un volume
+        conservano la loro media NaN-aware calcolata da MONAI (che al livello
+        per-volume vale gia' 1 quando pred e GT concordano nel vuoto, 0 quando
+        solo una e' vuota).
+
         Returns:
             Dict con chiavi "dice_<classe>" e "hd95_<classe>" per ciascuna
             delle sub-regioni foreground (ET, NET, CC, ED), piu' "dice_mean_fg"
-            e "hd95_mean_fg" (media sulle 4 sub-regioni, per un riepilogo
-            rapido oltre al dettaglio per-classe richiesto).
+            e "hd95_mean_fg" (media sulle sole sub-regioni PRESENTI nel set).
         """
-        dice_raw = self.dice_metric.aggregate(reduction="mean_batch")  # [C'] (C'=4 se no bg)
-        hd95_raw = self.hd95_metric.aggregate(reduction="mean_batch")
+        # Con get_not_nans=True, aggregate() ritorna (valori_per_classe, support):
+        # support[i] = numero di volumi in cui la classe i non era degenere.
+        dice_raw, dice_support = self.dice_metric.aggregate()   # [C'], [C']
+        hd95_raw, hd95_support = self.hd95_metric.aggregate()
 
         results: Dict[str, float] = {}
         for i, name in enumerate(self.class_names):
-            dice_val = dice_raw[i].item() if i < len(dice_raw) else float("nan")
-            hd95_val = hd95_raw[i].item() if i < len(hd95_raw) else float("nan")
-            results[f"dice_{name}"] = dice_val
-            results[f"hd95_{name}"] = hd95_val
+            # support==0 -> classe mai presente nel set: NaN (non 0.0 fittizio).
+            if i < len(dice_raw) and dice_support[i].item() > 0:
+                results[f"dice_{name}"] = dice_raw[i].item()
+            else:
+                results[f"dice_{name}"] = float("nan")
+            if i < len(hd95_raw) and hd95_support[i].item() > 0:
+                results[f"hd95_{name}"] = hd95_raw[i].item()
+            else:
+                results[f"hd95_{name}"] = float("nan")
 
         fg_names = FOREGROUND_CLASS_NAMES
-        results["dice_mean_fg"] = sum(results[f"dice_{n}"] for n in fg_names) / len(fg_names)
-        # HD95 puo' essere NaN per classi assenti in un dato batch/volume:
-        # la media va calcolata ignorando i NaN, altrimenti un solo NaN
-        # propaga a NaN l'intero riepilogo aggregato.
+        # Entrambe le medie foreground ora ignorano simmetricamente i NaN (classi
+        # a support nullo), coerentemente con la semantica BraTS: si media solo
+        # sulle sub-regioni realmente presenti nel set. Se NESSUNA lo e', NaN.
+        dice_vals = [results[f"dice_{n}"] for n in fg_names]
+        finite_dice = [v for v in dice_vals if v == v]  # v==v e' False solo per NaN
+        results["dice_mean_fg"] = (
+            sum(finite_dice) / len(finite_dice) if finite_dice else float("nan")
+        )
         hd95_vals = [results[f"hd95_{n}"] for n in fg_names]
-        finite_hd95 = [v for v in hd95_vals if v == v]  # v==v e' False solo per NaN
+        finite_hd95 = [v for v in hd95_vals if v == v]
         results["hd95_mean_fg"] = (
             sum(finite_hd95) / len(finite_hd95) if finite_hd95 else float("nan")
         )

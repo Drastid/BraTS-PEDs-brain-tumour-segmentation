@@ -2,7 +2,7 @@
 tests/test_optim_3d.py
 =========================
 Verifica src/optim_3d.py: split backbone/head, LR differenziato, freeze
-opzionale del backbone — per tutte e tre le architetture 3D.
+opzionale del backbone — per entrambe le architetture 3D (SegResNet, SwinUNETR).
 """
 
 from __future__ import annotations

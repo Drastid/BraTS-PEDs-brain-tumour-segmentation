@@ -172,7 +172,7 @@ def build_dataloaders_3d(
                      data/processed_3d su Colab, dopo estrazione dell'archivio).
         roi:         Dimensione della patch di training (vincoli architetturali:
                      si veda src/models3d.py — 128 soddisfa sia SwinUNETR
-                     (divisibile per 32) sia SegResNet/DynUNet (per 16)).
+                     (divisibile per 32) sia SegResNet (per 16)).
         num_classes: Numero di classi (5).
         batch_size:  Batch size di training (tipicamente 1-4 su A100 per patch
                      128^3, si veda road_3D.md §5.4).
@@ -202,12 +202,21 @@ def build_dataloaders_3d(
         train_ds = Dataset(data=train_dicts, transform=train_tf)
     val_ds = Dataset(data=val_dicts, transform=val_tf)  # volumi interi: cache sconsigliata (RAM)
 
+    # persistent_workers=True evita di ricreare i worker (e ri-scaldare la
+    # cache/pipeline) ad ogni epoca — su decine/centinaia di epoche risparmia
+    # tempo di startup ripetuto. Valido SOLO con num_workers>0: con 0 worker
+    # PyTorch solleva errore, quindi lo si attiva condizionalmente.
+    persistent = num_workers > 0
+
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=True, persistent_workers=persistent,
     )
     # batch_size=1 in validazione: sliding_window_inference lavora su un volume
     # alla volta (dimensioni diverse tra soggetti non sono garantite uguali).
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=num_workers)
+    val_loader = DataLoader(
+        val_ds, batch_size=1, shuffle=False, num_workers=num_workers,
+        persistent_workers=persistent,
+    )
 
     return train_loader, val_loader

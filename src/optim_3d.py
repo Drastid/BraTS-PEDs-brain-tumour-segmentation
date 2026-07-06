@@ -5,8 +5,8 @@ Ottimizzatore a LR differenziato per il fine-tuning dei modelli 3D
 pre-addestrati (roadmap §5.3, decisione utente: implementarlo gia' ora invece
 di partire con un LR singolo uniforme).
 
-Motivazione (road_3D.md §3.4/§5.3): i tre modelli 3D partono da pesi
-pre-addestrati (transfer learning), non da zero. Il vecchio progetto 2D usava
+Motivazione (road_3D.md §3.4/§5.3): i due modelli 3D (SegResNet, SwinUNETR)
+partono SEMPRE da pesi pre-addestrati (transfer learning), mai da zero. Il vecchio progetto 2D usava
 un two-phase schedule legato all'encoder ImageNet (freeze poi unfreeze). Qui
 non c'e' un ImageNet 3D standard, ma la stessa idea si applica al backbone
 pre-addestrato (SegResNet bundle BraTS, SwinUNETR SSL): LR piu' basso sul
@@ -21,9 +21,7 @@ prime epoche).
 
 Identificazione backbone vs head
 ----------------------------------
-Le tre architetture MONAI hanno nomi di modulo diversi per la head di output:
-    - DynUNet:    ultimo layer e' `output_block` (o `deep_supervision_heads`
-                  se deep_supervision=True, non usato qui).
+Le due architetture MONAI hanno nomi di modulo diversi per la head di output:
     - SegResNet:  ultimo layer e' `conv_final` (visto anche nel test di
                   src/models3d.py::load_pretrained_3d).
     - SwinUNETR:  ultimo layer e' `out` (il conv finale dopo il decoder UNet).
@@ -33,7 +31,7 @@ conoscere i dettagli interni di ciascuna architettura MONAI.
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, Iterable, List
 
 import torch
 import torch.nn as nn
@@ -41,7 +39,6 @@ import torch.nn as nn
 # Nome del modulo "head" (ultimo layer di output) per ciascuna architettura,
 # nella stessa convenzione di naming di arch usata da src/models3d.py.
 _HEAD_MODULE_NAMES: Dict[str, str] = {
-    "dynunet": "output_block",
     "segresnet": "conv_final",
     "swinunetr": "out",
 }
@@ -52,7 +49,7 @@ def _get_head_module(model: nn.Module, arch: str) -> nn.Module:
 
     Args:
         model: Modello costruito da src.models3d.build_model_3d.
-        arch:  Uno tra "dynunet", "segresnet", "swinunetr" (stessa convenzione
+        arch:  Uno tra "segresnet", "swinunetr" (stessa convenzione
                di src.models3d.ARCH_NAMES).
 
     Returns:
@@ -88,7 +85,7 @@ def split_backbone_head_params(
 
     Args:
         model: Modello costruito da build_model_3d.
-        arch:  "dynunet" | "segresnet" | "swinunetr".
+        arch:  "segresnet" | "swinunetr".
         extra_head_param_names: Nomi (convenzione model.state_dict()/
             model.named_parameters()) di parametri AGGIUNTIVI da trattare come
             head, anche se non appartengono al modulo di output. Pensato per i
@@ -131,7 +128,7 @@ def set_backbone_trainable(
 
     Args:
         model:     Modello costruito da build_model_3d.
-        arch:      "dynunet" | "segresnet" | "swinunetr".
+        arch:      "segresnet" | "swinunetr".
         trainable: True -> il backbone e' allenabile; False -> congelato
                    (requires_grad=False su tutti i parametri fuori dalla head).
         extra_head_param_names: Si veda split_backbone_head_params — questi
@@ -161,7 +158,7 @@ def build_optimizer_3d(
         model:            Modello costruito da build_model_3d (con pesi
                           pre-addestrati gia' caricati via load_pretrained_3d,
                           se applicabile).
-        arch:             "dynunet" | "segresnet" | "swinunetr".
+        arch:             "segresnet" | "swinunetr".
         base_lr:          LR di riferimento (applicato per intero alla head).
         backbone_lr_mult: Moltiplicatore per il LR del backbone
                           (backbone_lr = base_lr * backbone_lr_mult). Default

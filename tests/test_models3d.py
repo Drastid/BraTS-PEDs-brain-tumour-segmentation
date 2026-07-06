@@ -1,9 +1,10 @@
 """
 tests/test_models3d.py
 ========================
-Smoke test per src/models3d.py (roadmap §9): verifica che le tre architetture
-3D costruiscano correttamente e producano output della shape attesa su un
-input fittizio [B, 4, 128, 128, 128] -> [B, 5, 128, 128, 128].
+Smoke test per src/models3d.py (roadmap §9): verifica che entrambe le
+architetture 3D (SegResNet, SwinUNETR) costruiscano correttamente e producano
+output della shape attesa su un input fittizio
+[B, 4, 128, 128, 128] -> [B, 5, 128, 128, 128].
 
 Esecuzione locale su CPU (no CUDA) — solo verifica strutturale, non prestazionale.
 """

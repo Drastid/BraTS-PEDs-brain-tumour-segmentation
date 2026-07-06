@@ -179,7 +179,10 @@ def train_one_epoch_3d(
     model.train()
     tracker = MetricTracker()
     use_amp = amp_dtype != "none"
-    autocast_dtype = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
+    # Solo bf16 e' supportato per l'AMP (fp16 e' stato rimosso: richiederebbe un
+    # GradScaler per evitare underflow dei gradienti). Quando use_amp e' False,
+    # l'autocast e' disabilitato e questo dtype e' ininfluente.
+    autocast_dtype = torch.bfloat16
 
     for batch in tqdm(loader, desc="  train", leave=False):
         images = batch["image"].to(device, non_blocking=True)
@@ -241,7 +244,10 @@ def train_one_epoch_gsl_3d(
     model.train()
     tracker = MetricTracker()
     use_amp = amp_dtype != "none"
-    autocast_dtype = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
+    # Solo bf16 e' supportato per l'AMP (fp16 e' stato rimosso: richiederebbe un
+    # GradScaler per evitare underflow dei gradienti). Quando use_amp e' False,
+    # l'autocast e' disabilitato e questo dtype e' ininfluente.
+    autocast_dtype = torch.bfloat16
 
     criterion.set_epoch(epoch)
 

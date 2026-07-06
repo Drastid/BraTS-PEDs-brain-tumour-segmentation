@@ -4,8 +4,14 @@ run_pipeline_3d.py
 ====================
 Orchestratore end-to-end per il training 3D BraTS-PEDs su Colab/A100.
 
-    python run_pipeline_3d.py --arch segresnet --loss dice_focal --data-root /content/processed_3d
-    python run_pipeline_3d.py --arch swinunetr --loss gsl --pretrained none
+Il progetto 3D lavora ESCLUSIVAMENTE in transfer learning su DUE architetture
+(SegResNet, SwinUNETR): dataset pediatrico limitato + risorse Colab finite =>
+nessun training from-scratch (decisione utente). DynUNet e' stato rimosso.
+
+    python run_pipeline_3d.py --arch segresnet --loss dice_focal \
+        --pretrained-segresnet weights/brats_mri_segmentation.pt --data-root /content/processed_3d
+    python run_pipeline_3d.py --arch swinunetr --loss gsl \
+        --pretrained-swinunetr weights/model_swinvit.pt
     python run_pipeline_3d.py --all --loss dice_focal \
         --pretrained-swinunetr weights/model_swinvit.pt \
         --pretrained-segresnet weights/brats_mri_segmentation.pt
@@ -18,14 +24,11 @@ roadmap) seleziona il ramo di training:
                         DTM calcolata on-the-fly per patch
                         (src/transforms.py::ComputeDistanceMapd).
 
-Il flag --pretrained {auto,none} (road_3D.md §7) permette di disattivare il
-transfer learning per un'ablation "scratch vs pretrained". I checkpoint sono
-specifici per architettura — --pretrained-swinunetr e --pretrained-segresnet
-(nessun --weights-path condiviso: un checkpoint SwinUNETR non ha alcuna
-chiave in comune con SegResNet/DynUNet). DynUNet non ha un flag pesi
-dedicato: non e' stato individuato alcun checkpoint pre-addestrato compatibile
-per questa architettura nel progetto, quindi parte sempre da zero, sia con
---arch dynunet sia dentro --all.
+I checkpoint pre-addestrati sono specifici per architettura —
+--pretrained-swinunetr e --pretrained-segresnet (nessun --weights-path
+condiviso: un checkpoint SwinUNETR non ha alcuna chiave in comune con
+SegResNet). Il flag --pretrained {auto,none} permette comunque un'ablation
+"scratch vs pretrained" disattivando il caricamento (road_3D.md §7).
 
 Backup e valutazione (road_3D.md §7, completato al Punto 7)
 -------------------------------------------------------------
@@ -40,12 +43,10 @@ Backup e valutazione (road_3D.md §7, completato al Punto 7)
                    evaluation_outputs/<run-name>/<arch>_<loss>/.
 
 Questo script allena un modello/loss per invocazione (--arch singolo), oppure
-tutti e tre i modelli in sequenza con --all (stessa logica di
-master/run_pipeline.py --models unet fpn segformer nel vecchio progetto 2D):
-in quel caso --arch e' ignorato e si itera su ARCH_NAMES
-(dynunet, segresnet, swinunetr), ciascuno con la propria sottocartella di
-checkpoint/valutazione (<ckpt-root>/<run-name>/<arch>_<loss>/), cosi' i run
-restano isolati e confrontabili tra loro.
+entrambi i modelli in sequenza con --all: in quel caso --arch e' ignorato e si
+itera su ARCH_NAMES (segresnet, swinunetr), ciascuno con la propria
+sottocartella di checkpoint/valutazione (<ckpt-root>/<run-name>/<arch>_<loss>/),
+cosi' i run restano isolati e confrontabili tra loro.
 """
 
 from __future__ import annotations
@@ -69,13 +70,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--arch", required=False, default=None,
-                   choices=["dynunet", "segresnet", "swinunetr"],
+                   choices=["segresnet", "swinunetr"],
                    help="Architettura da allenare (richiesto se --all non e' passato).")
     p.add_argument("--all", dest="all_archs", action="store_true",
-                   help="Allena in sequenza tutte e tre le architetture "
-                        "(dynunet, segresnet, swinunetr), ignorando --arch. "
-                        "Ciascuna usa la propria sottocartella di checkpoint/valutazione "
-                        "(stessa logica di master/run_pipeline.py --models nel 2D).")
+                   help="Allena in sequenza entrambe le architetture "
+                        "(segresnet, swinunetr), ignorando --arch. Ciascuna usa la propria "
+                        "sottocartella di checkpoint/valutazione, e un fallimento su una "
+                        "(es. OOM) non azzera i risultati dell'altra.")
     p.add_argument("--loss", default="dice_focal", choices=["dice_focal", "gsl"],
                    help="Ramo di loss: 'dice_focal' (MONAI, default sicuro) o 'gsl' (schedulata).")
 
@@ -96,9 +97,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                    help="Path al checkpoint pre-addestrato per SegResNet (es. bundle MONAI "
                         "Model Zoo brats_mri_segmentation). Ignorato se --pretrained=none o se "
                         "l'arch in esecuzione non e' segresnet.")
-    # DynUNet non ha un flag pesi dedicato: nessun checkpoint pre-addestrato
-    # compatibile e' stato individuato per questa architettura nel progetto
-    # (road_3D.md §3.4) — parte sempre da zero, con o senza --all.
 
     p.add_argument("--roi", type=int, nargs=3, default=[128, 128, 128],
                    help="Dimensione della patch 3D (deve rispettare i vincoli di "
@@ -107,11 +105,24 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--num-samples", type=int, default=2,
                    help="Patch campionate per volume ad ogni draw di training.")
     p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument("--no-cache", dest="use_cache", action="store_false",
+                   help="Disattiva CacheDataset per il train set: usa un Dataset semplice "
+                        "che ri-decodifica i NIfTI ad ogni epoca (piu' lento ma a impronta RAM "
+                        "minima). Utile se la RAM host di Colab non basta per tutti i volumi.")
+    p.set_defaults(use_cache=True)
+    p.add_argument("--cache-rate", type=float, default=1.0,
+                   help="Frazione del train set da tenere in RAM decodificata via CacheDataset "
+                        "(1.0 = tutti i ~205 volumi; abbassala, es. 0.5, se la RAM host di Colab "
+                        "va in OOM al caching iniziale). Ignorato se --no-cache e' passato.")
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--base-lr", type=float, default=1e-4)
     p.add_argument("--backbone-lr-mult", type=float, default=0.1)
     p.add_argument("--weight-decay", type=float, default=1e-4)
-    p.add_argument("--amp-dtype", default="bf16", choices=["bf16", "fp16", "none"])
+    p.add_argument("--amp-dtype", default="bf16", choices=["bf16", "none"],
+                   help="Precisione mista: 'bf16' (autocast bfloat16, raccomandato su A100) "
+                        "o 'none' (fp32 puro). fp16 NON e' offerto di proposito: richiederebbe "
+                        "un GradScaler per evitare underflow dei gradienti, e su A100 bf16 e' "
+                        "superiore (stesso range dinamico di fp32, nessuno scaling necessario).")
     p.add_argument("--warmup-freeze-epochs", type=int, default=0,
                    help="Se >0, congela il backbone per le prime N epoche (warm-up head-only, "
                         "consigliato per SwinUNETR — road_3D.md §5.3).")
@@ -161,7 +172,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
 
     if not args.all_archs and not args.arch:
-        print("[ERRORE] specifica --arch <dynunet|segresnet|swinunetr> oppure --all.")
+        print("[ERRORE] specifica --arch <segresnet|swinunetr> oppure --all.")
         return 1
     if args.all_archs and args.arch:
         print("[ERRORE] --arch e --all sono mutuamente esclusivi (--all itera su tutte "
@@ -182,23 +193,120 @@ def main(argv: Optional[list[str]] = None) -> int:
     torch.backends.cudnn.allow_tf32 = True
 
     archs = list(ARCH_NAMES) if args.all_archs else [args.arch]
-    results: dict[str, float] = {}
+
+    # Policy 100% transfer learning: nessun modello parte from-scratch per errore.
+    # Se --pretrained=auto, ogni arch richiesta DEVE avere il suo checkpoint (flag
+    # presente + file esistente), altrimenti si fallisce SUBITO (prima di ogni
+    # training, cosi' con --all non si allena la prima arch per poi scoprire che
+    # la seconda non ha i pesi). Il from-scratch resta possibile solo esplicito,
+    # con --pretrained none.
+    err = _validate_pretrained_weights(args, archs)
+    if err:
+        print(err)
+        return 1
+
+    return _run_archs(args, archs, device)
+
+
+def _validate_pretrained_weights(args: argparse.Namespace, archs: list) -> Optional[str]:
+    """Verifica che, con --pretrained=auto, ogni arch richiesta abbia un checkpoint
+    valido. Ritorna None se tutto ok, altrimenti un messaggio d'errore.
+
+    Con --pretrained=none il check e' saltato (ablation from-scratch esplicita).
+    """
+    if args.pretrained != "auto":
+        return None
+    flag_by_arch = {
+        "swinunetr": ("--pretrained-swinunetr", args.pretrained_swinunetr),
+        "segresnet": ("--pretrained-segresnet", args.pretrained_segresnet),
+    }
+    problems = []
     for arch in archs:
-        results[arch] = _train_one_arch(args, arch, device)
+        flag_name, path = flag_by_arch.get(arch, (None, None))
+        if not path:
+            problems.append(
+                f"  - {arch}: manca {flag_name} (obbligatorio: il progetto e' 100% "
+                f"transfer learning, nessun training from-scratch)."
+            )
+        elif not os.path.isfile(path):
+            problems.append(f"  - {arch}: il checkpoint {flag_name}={path!r} non esiste.")
+    if problems:
+        return (
+            "[ERRORE] pesi pre-addestrati mancanti per --pretrained=auto:\n"
+            + "\n".join(problems)
+            + "\n  Fornisci i checkpoint mancanti, oppure usa --pretrained none per un "
+              "training from-scratch esplicito (ablation)."
+        )
+    return None
 
-    if len(archs) > 1:
-        print(f"\n{'='*70}\n  RIEPILOGO best dice_mean_fg (val) — tutte le architetture\n{'='*70}")
-        for arch, fg in results.items():
-            print(f"  {arch:12s}  dice_mean_fg={fg:.4f}")
 
+def _run_archs(args: argparse.Namespace, archs: list, device) -> int:
+    """Allena la lista di architetture richieste e ritorna l'exit code.
+
+    Con una sola architettura (--arch), un eventuale crash propaga: l'utente
+    vuole traceback + exit code != 0, non un mascheramento. Con --all (piu' di
+    una), invece, ogni architettura e' isolata: un fallimento (tipicamente OOM)
+    viene loggato e si prosegue con le successive, cosi' non azzera i risultati
+    di quelle gia' completate. Exit code != 0 solo se TUTTE falliscono.
+    """
+    multi = len(archs) > 1
+    results: dict[str, float] = {}
+    failed: dict[str, str] = {}
+
+    for arch in archs:
+        if not multi:
+            results[arch] = _train_one_arch(args, arch, device)
+            continue
+        results[arch] = _train_one_arch_isolated(args, arch, device, failed)
+        # Dopo un OOM la cache CUDA resta occupata/frammentata e farebbe fallire
+        # a cascata anche i modelli seguenti: la si libera tra un'arch e l'altra.
+        if device.type == "cuda":
+            import torch
+            torch.cuda.empty_cache()
+
+    if multi:
+        _print_multi_summary(archs, results, failed)
+
+    if failed and len(failed) == len(archs):
+        return 1
     return 0
+
+
+def _train_one_arch_isolated(
+    args: argparse.Namespace, arch: str, device, failed: dict,
+) -> float:
+    """Come _train_one_arch, ma cattura QUALSIASI eccezione (per --all): registra
+    il fallimento in `failed` e ritorna NaN invece di propagare, cosi' il loop
+    puo' continuare con le architetture successive."""
+    try:
+        return _train_one_arch(args, arch, device)
+    except Exception as exc:  # noqa: BLE001 — isolamento volontario di ogni crash della singola arch
+        import traceback
+        failed[arch] = f"{type(exc).__name__}: {exc}"
+        print(f"\n{'!'*70}\n  [ERRORE] training di arch={arch!r} fallito — proseguo con le "
+              f"successive.\n  {failed[arch]}\n{'!'*70}")
+        traceback.print_exc()
+        return float("nan")
+
+
+def _print_multi_summary(archs: list, results: dict, failed: dict) -> None:
+    """Riepilogo finale del run --all: best dice_mean_fg per arch, con marcatura
+    esplicita delle architetture fallite."""
+    print(f"\n{'='*70}\n  RIEPILOGO best dice_mean_fg (val) — tutte le architetture\n{'='*70}")
+    for arch in archs:
+        if arch in failed:
+            print(f"  {arch:12s}  FALLITA ({failed[arch]})")
+        else:
+            print(f"  {arch:12s}  dice_mean_fg={results[arch]:.4f}")
+    if failed:
+        print(f"\n  {len(failed)}/{len(archs)} architetture fallite: {', '.join(failed)}")
 
 
 def _train_one_arch(args: argparse.Namespace, arch: str, device) -> float:
     """Allena e valuta UNA architettura (args.arch e' ignorato: si usa `arch`).
 
     Estratta da main() per supportare --all (roadmap: training sequenziale di
-    tutte e tre le architetture, stessa logica di
+    entrambe le architetture, stessa logica di
     master/run_pipeline.py::train_model iterato su --models nel 2D). Ogni
     chiamata usa la propria sottocartella <ckpt-root>/<run-name>/<arch>_<loss>/,
     cosi' i checkpoint non si sovrascrivono tra un'architettura e l'altra.
@@ -224,14 +332,14 @@ def _train_one_arch(args: argparse.Namespace, arch: str, device) -> float:
     ckpt_dir = os.path.join(args.ckpt_root, run_label, f"{arch}_{args.loss}")
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    # --- Modello + (opzionale) pesi pre-addestrati ---
+    # --- Modello + pesi pre-addestrati (sempre, il progetto e' 100% transfer learning) ---
     # Il flag pesi e' specifico per architettura (--pretrained-swinunetr /
-    # --pretrained-segresnet): un checkpoint SwinUNETR (es. model_swinvit.pt)
-    # non ha alcuna chiave in comune con SegResNet/DynUNet, quindi non ha senso
-    # un --weights-path condiviso — soprattutto con --all, dove servirebbe
-    # altrimenti scegliere UN SOLO path per tutti e tre i modelli. DynUNet non
-    # ha un flag dedicato: parte sempre da zero (nessun checkpoint compatibile
-    # individuato per questa architettura, road_3D.md §3.4).
+    # --pretrained-segresnet): un checkpoint SwinUNETR (es. model_swinvit.pt) non
+    # ha alcuna chiave in comune con SegResNet, quindi non ha senso un
+    # --weights-path condiviso — soprattutto con --all, dove servirebbe altrimenti
+    # scegliere UN SOLO path per entrambi i modelli. Se il flag per l'arch corrente
+    # manca, load_pretrained_3d non viene chiamato e si stampa un warning esplicito
+    # (il modello resterebbe from-scratch, contro la policy del progetto).
     weights_path_by_arch = {
         "swinunetr": args.pretrained_swinunetr,
         "segresnet": args.pretrained_segresnet,
@@ -240,11 +348,14 @@ def _train_one_arch(args: argparse.Namespace, arch: str, device) -> float:
 
     model = build_model_3d(arch, in_channels=4, num_classes=args.num_classes, roi=roi).to(device)
     unmatched_param_names: list[str] = []
-    if args.pretrained == "auto" and weights_path:
+    if args.pretrained == "auto":
+        # weights_path e' garantito presente e valido da _validate_pretrained_weights
+        # (chiamata in main prima del training): con --pretrained=auto non si arriva
+        # mai qui senza un checkpoint. Con --pretrained none, invece, si salta il
+        # caricamento e si allena from-scratch (ablation esplicita).
         model, unmatched_param_names = load_pretrained_3d(model, weights_path)
-    elif args.pretrained == "auto" and not weights_path:
-        print(f"[warn] --pretrained=auto ma nessun checkpoint fornito per arch={arch!r}: "
-              f"training da zero.")
+    else:  # --pretrained none
+        print(f"[info] --pretrained=none: arch={arch!r} allenata from-scratch (ablation).")
 
     # --- DataLoader ---
     with_dtm = args.loss == "gsl"
@@ -252,6 +363,7 @@ def _train_one_arch(args: argparse.Namespace, arch: str, device) -> float:
         data_root=args.data_root, roi=roi, num_classes=args.num_classes,
         batch_size=args.batch_size, num_samples=args.num_samples,
         num_workers=args.num_workers, with_dtm=with_dtm,
+        use_cache=args.use_cache, cache_rate=args.cache_rate,
     )
 
     # --- Optimizer (LR differenziato backbone/head) ---
@@ -310,6 +422,10 @@ def _train_one_arch(args: argparse.Namespace, arch: str, device) -> float:
                 model, arch, trainable=True, extra_head_param_names=unmatched_param_names,
             )
 
+        # Backbone congelato se siamo dentro la finestra di warm-up (utile per
+        # diagnosticare il transfer learning insieme alla curva LR sotto).
+        backbone_frozen = args.warmup_freeze_epochs > 0 and epoch < args.warmup_freeze_epochs
+
         if args.loss == "dice_focal":
             tr_metrics = train_one_epoch_3d(
                 model, train_loader, criterion, optimizer, device, amp_dtype=args.amp_dtype,
@@ -319,6 +435,13 @@ def _train_one_arch(args: argparse.Namespace, arch: str, device) -> float:
                 model, train_loader, criterion, optimizer, device, epoch=epoch,
                 amp_dtype=args.amp_dtype,
             )
+
+        # LR EFFETTIVAMENTE usato in questa epoca (catturato PRIMA di scheduler.step,
+        # che lo decrementa per la prossima). L'optimizer ha 2 param_group:
+        # [0]=backbone (LR ridotto), [1]=head (LR pieno) — si loggano entrambi per
+        # diagnosticare il fine-tuning differenziato (§2.5 di accortezze.md).
+        lr_backbone = optimizer.param_groups[0]["lr"]
+        lr_head = optimizer.param_groups[1]["lr"]
         scheduler.step()
 
         val_metrics = evaluate_3d(
@@ -327,9 +450,14 @@ def _train_one_arch(args: argparse.Namespace, arch: str, device) -> float:
         fg_dice = val_metrics["dice_mean_fg"]
 
         print(f"  [ep {epoch+1}/{args.epochs}] train_loss={tr_metrics['loss']:.4f}  "
-              f"val_dice_fg={fg_dice:.4f}  val_hd95_fg={val_metrics['hd95_mean_fg']:.2f}")
+              f"val_dice_fg={fg_dice:.4f}  val_hd95_fg={val_metrics['hd95_mean_fg']:.2f}  "
+              f"lr_head={lr_head:.2e}{'  [backbone frozen]' if backbone_frozen else ''}")
 
-        history.append({"epoch": epoch, "train": tr_metrics, "val": val_metrics})
+        history.append({
+            "epoch": epoch, "train": tr_metrics, "val": val_metrics,
+            "lr_backbone": lr_backbone, "lr_head": lr_head,
+            "backbone_frozen": backbone_frozen,
+        })
 
         if fg_dice > best_fg_dice:
             best_fg_dice = fg_dice

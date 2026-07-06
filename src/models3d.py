@@ -3,19 +3,19 @@ src/models3d.py
 =================
 Architetture 3D volumetriche per BraTS-PEDs, via MONAI (roadmap §3).
 
-Triade di modelli (rimpiazzano la triade 2D del vecchio progetto):
+Coppia di modelli (il progetto 3D lavora ESCLUSIVAMENTE in transfer learning,
+decisione utente: dataset pediatrico limitato + risorse Colab finite => nessun
+training from-scratch, ogni architettura parte da pesi pre-addestrati):
 
-    2D (vecchio, master/)          3D (qui)
-    ----------------------------   -----------------------------------
-    U-Net (smp.Unet, ResNet34)     DynUNet   (stile nnU-Net)
-    FPN   (smp.FPN,  ResNet34)     SegResNet (Myronenko 2018, vincitore BraTS)
-    SegFormer (nvidia/mit-b1)      SwinUNETR (transformer 3D SOTA, SSL-pretrained)
+    3D (qui)
+    -----------------------------------
+    SegResNet (Myronenko 2018, vincitore BraTS; bundle MONAI Model Zoo)
+    SwinUNETR (transformer 3D SOTA, pesi SSL NVIDIA / BrainSegFounder)
 
-FPN non ha equivalente 3D drop-in in MONAI (la FPN nasce per detection 2D).
-Si rimpiazza con SegResNet, che realizza la stessa idea di aggregazione
-multi-scala in ambito volumetrico ed e' l'unico dei tre con un bundle BraTS
-pronto nel MONAI Model Zoo (si veda §3.2 di road_3D.md per la discussione
-completa delle alternative).
+DynUNet e' stato RIMOSSO dal progetto (decisione utente): non e' stato
+individuato per esso alcun checkpoint pre-addestrato compatibile, e la policy
+100% transfer learning non ammette architetture from-scratch. Restano quindi
+SegResNet e SwinUNETR, entrambe con pesi pre-addestrati disponibili.
 
 Le architetture sono costruite SEMPRE con la testa a 5 classi pediatriche
 (background, ET, NET, CC, ED — src/constants.py). I pesi pre-addestrati
@@ -27,9 +27,8 @@ zero mentre il resto del backbone eredita i pesi pre-addestrati.
 Vincoli spaziali della ROI di training/inference (roadmap §3.3):
     - SwinUNETR: ogni dimensione della patch deve essere divisibile per 32
       (patch_size=2 di default => 2**5). Es. validi: 96, 128, 160, 192.
-    - SegResNet / DynUNet (con gli stride di default qui sotto, 4 livelli di
-      downsampling stride-2): patch divisibile per 16. 128 soddisfa entrambi
-      i vincoli contemporaneamente.
+    - SegResNet (4 livelli di downsampling stride-2): patch divisibile per 16.
+      128 soddisfa entrambi i vincoli contemporaneamente.
 """
 
 from __future__ import annotations
@@ -38,13 +37,12 @@ from typing import Iterable, Optional, Sequence
 
 import torch
 import torch.nn as nn
-from monai.networks.nets import DynUNet, SegResNet, SwinUNETR
+from monai.networks.nets import SegResNet, SwinUNETR
 
-# Nomi architetturali reali (non piu' gli slot ereditati dal vecchio progetto
-# 2D unet/fpn/segformer): allineati a MONAI, cosi' --arch e' immediatamente
-# riconoscibile senza dover consultare la tabella di corrispondenza 2D->3D nel
-# docstring del modulo.
-ARCH_NAMES = ("dynunet", "segresnet", "swinunetr")
+# Nomi architetturali reali (allineati a MONAI). Solo SegResNet e SwinUNETR:
+# DynUNet e' stato rimosso (nessun pretrain compatibile, e il progetto e' 100%
+# transfer learning — si veda il docstring del modulo).
+ARCH_NAMES = ("segresnet", "swinunetr")
 
 
 def build_model_3d(
@@ -53,49 +51,43 @@ def build_model_3d(
     num_classes: int = 5,
     roi: Sequence[int] = (128, 128, 128),
 ) -> nn.Module:
-    """Costruisce una delle tre architetture 3D con testa a `num_classes` canali.
+    """Costruisce una delle architetture 3D con testa a `num_classes` canali.
 
     Args:
-        arch:        Una tra "dynunet", "segresnet", "swinunetr".
+        arch:        Una tra "segresnet", "swinunetr".
         in_channels: Numero di modalita' MRI in input (default 4: t1c,t1n,t2f,t2w).
         num_classes: Numero di classi di output (default 5: BG,ET,NET,CC,ED).
-        roi:         Dimensione della patch 3D attesa in training/inference
-                     (usata solo per DynUNet, che deriva `strides` dal numero
-                     di livelli richiesti; SegResNet e SwinUNETR non ne hanno
-                     bisogno alla costruzione, solo per il vincolo di
-                     divisibilita' documentato nel modulo).
+        roi:         Dimensione della patch 3D attesa in training/inference —
+                     rilevante solo per il vincolo di divisibilita' documentato
+                     nel modulo (ne' SegResNet ne' SwinUNETR ne hanno bisogno
+                     alla costruzione).
 
     Returns:
         Un nn.Module MONAI pronto per il forward su tensori
         [B, in_channels, *roi].
 
     Raises:
-        ValueError: se `arch` non e' uno dei tre nomi attesi.
+        ValueError: se `arch` non e' uno dei nomi attesi.
     """
-    if arch == "dynunet":
-        # DynUNet stile nnU-Net: 5 livelli (1 stem + 4 downsampling stride-2)
-        # => richiede input divisibile per 16 su ogni asse spaziale.
-        return DynUNet(
-            spatial_dims=3,
-            in_channels=in_channels,
-            out_channels=num_classes,
-            kernel_size=[3, 3, 3, 3, 3],
-            strides=[1, 2, 2, 2, 2],
-            upsample_kernel_size=[2, 2, 2, 2],
-            deep_supervision=False,
-        )
     if arch == "segresnet":
-        # SegResNet — rimpiazza la FPN 2D (vedi docstring del modulo / road_3D.md §3.2)
+        # SegResNet (Myronenko 2018) — bundle BraTS nel MONAI Model Zoo.
+        # init_filters=16: allineato al checkpoint pre-addestrato reale del
+        # progetto (weights/model.pt, bundle MONAI Model Zoo brats_mri_segmentation,
+        # 3 classi adulte TC/WT/ET) — verificato: con init_filters=32 (valore
+        # precedente) load_pretrained_3d caricava 0/83 tensori (ogni canale del
+        # backbone ha dimensione diversa a cascata), con init_filters=16 ne
+        # carica 81/83 (l'intero backbone; solo la head 3->5 classi resta esclusa,
+        # come atteso per il transfer learning).
         return SegResNet(
             spatial_dims=3,
             in_channels=in_channels,
             out_channels=num_classes,
-            init_filters=32,
+            init_filters=16,
             blocks_down=(1, 2, 2, 4),
             blocks_up=(1, 1, 1),
         )
     if arch == "swinunetr":
-        # SwinUNETR — rimpiazza SegFormer 2D; vincolo: patch divisibile per 32.
+        # SwinUNETR — transformer 3D; vincolo: patch divisibile per 32.
         return SwinUNETR(
             in_channels=in_channels,
             out_channels=num_classes,
