@@ -117,7 +117,14 @@ class SegmentationMetrics3D:
         targets_oh = _to_one_hot(targets, self.num_classes)
 
         self.dice_metric(y_pred=preds_oh, y=targets_oh)
-        self.hd95_metric(y_pred=preds_oh, y=targets_oh)
+        # HD95 SEMPRE su CPU: MONAI instrada l'erosione morfologica sottostante
+        # (get_mask_edges) su cucim (GPU) quando l'input e' un tensore CUDA, e su
+        # alcune immagini Colab la compilazione JIT di cucim/CuPy crasha
+        # (incompatibilita' del dialetto C++ negli header vendorizzati). Spostare
+        # su CPU forza MONAI sul path scipy, bypassando cucim del tutto — costo
+        # trascurabile: l'HD95 e' gia' intrinsecamente CPU-bound (erosioni
+        # morfologiche), non un'operazione che beneficia molto dalla GPU.
+        self.hd95_metric(y_pred=preds_oh.cpu(), y=targets_oh.cpu())
 
     def aggregate_and_reset(self) -> Dict[str, float]:
         """Calcola le medie finali per-classe e resetta gli accumulatori.
