@@ -10,8 +10,10 @@ la fase di I/O/validazione locale) e applica, interamente su Colab:
     2. Normalizzazione clip-P99.5 + z-score sui soli voxel non-zero
        (ClipAndNormalizeNonZerod, src/transforms_3d.py — replica esatta del
        vecchio progetto 2D)
-    3. SOLO in training: patch sampling bilanciato tumore/background
-       (RandCropByPosNegLabeld) + augmentation geometrica random (flip,
+    3. SOLO in training: patch sampling bilanciato PER CLASSE
+       (RandCropByLabelClassesd, con ratios che sovra-pesano CC — la
+       sub-regione pediatrica piu' rara, si veda scripts/compute_class_freq.py
+       per la diagnosi quantitativa) + augmentation geometrica random (flip,
        rotazione) + augmentation di intensita' z-score-safe
     4. SOLO se richiesta la GSL: calcolo della DTM sulla patch gia' croppata
        (ComputeDistanceMapd, src/transforms.py)
@@ -32,7 +34,7 @@ from monai.transforms import (
     EnsureChannelFirstd,
     EnsureTyped,
     LoadImaged,
-    RandCropByPosNegLabeld,
+    RandCropByLabelClassesd,
     RandFlipd,
     RandRotate90d,
     RandScaleIntensityd,
@@ -43,6 +45,19 @@ from .transforms import ComputeDistanceMapd
 from .transforms_3d import ClipAndNormalizeNonZerod
 
 MODALITIES: List[str] = ["t1c", "t1n", "t2f", "t2w"]
+
+# Ratios di default per RandCropByLabelClassesd, indice = classe nativa
+# (0=BG, 1=ET, 2=NET, 3=CC, 4=ED — src/constants.py). CC e' la sub-regione
+# pediatrica piu' rara (verifica quantitativa: scripts/compute_class_freq.py);
+# senza un sampling dedicato, il random-crop bilanciato solo fg/bg
+# (il vecchio RandCropByPosNegLabeld) puo' non includerla quasi mai nelle
+# patch di training, indipendentemente da eventuali pesi nella loss — nessun
+# peso corregge un batch che non vede mai la classe. Qui CC (indice 3) e'
+# pesata 2x rispetto alle altre sub-regioni foreground (ET, NET, ED), che a
+# loro volta sono gia' pesate 2x rispetto al background. Configurabile
+# via class_sample_ratios in build_train_transforms/build_dataloaders_3d
+# (o --class-sample-ratios in run_pipeline_3d.py).
+DEFAULT_CLASS_SAMPLE_RATIOS: tuple[float, ...] = (1.0, 2.0, 2.0, 4.0, 2.0)
 
 
 def build_subject_dicts(split_dir: str) -> List[dict]:
@@ -78,31 +93,46 @@ def build_train_transforms(
     num_classes: int,
     num_samples: int = 2,
     with_dtm: bool = False,
+    class_sample_ratios: Optional[Sequence[float]] = None,
 ) -> Compose:
     """Pipeline di transform per il TRAINING (patch sampling + augmentation).
 
     Args:
         roi:         Dimensione della patch 3D (es. (128,128,128)).
-        num_classes: Numero di classi (5, per ComputeDistanceMapd).
+        num_classes: Numero di classi (5, per RandCropByLabelClassesd e per
+                     ComputeDistanceMapd).
         num_samples: Numero di patch campionate per volume ad ogni chiamata
-                     (RandCropByPosNegLabeld) — piu' di 1 ammortizza il costo
+                     (RandCropByLabelClassesd) — piu' di 1 ammortizza il costo
                      di I/O/decodifica NIfTI su piu' patch per volume caricato.
         with_dtm:    Se True, aggiunge ComputeDistanceMapd DOPO il patch
                      sampling (richiesto solo dal ramo --loss=gsl).
+        class_sample_ratios: Ratios per-classe di RandCropByLabelClassesd
+                     (lunghezza num_classes, indice=classe nativa). Se None,
+                     usa DEFAULT_CLASS_SAMPLE_RATIOS (CC sovra-pesata: si
+                     veda il commento sulla costante per il razionale).
 
     Returns:
         monai.transforms.Compose pronta per Dataset/CacheDataset.
     """
+    ratios = list(class_sample_ratios) if class_sample_ratios is not None else list(
+        DEFAULT_CLASS_SAMPLE_RATIOS
+    )
+    if len(ratios) != num_classes:
+        raise ValueError(
+            f"class_sample_ratios deve avere lunghezza num_classes={num_classes}, "
+            f"got {len(ratios)}."
+        )
+
     transforms = [
         LoadImaged(keys=["image", "label"]),
         EnsureChannelFirstd(keys=["image", "label"]),
         ClipAndNormalizeNonZerod(keys=["image"]),
-        RandCropByPosNegLabeld(
+        RandCropByLabelClassesd(
             keys=["image", "label"],
             label_key="label",
             spatial_size=roi,
-            pos=1,
-            neg=1,
+            ratios=ratios,
+            num_classes=num_classes,
             num_samples=num_samples,
             image_key="image",
             image_threshold=0,
@@ -164,6 +194,7 @@ def build_dataloaders_3d(
     with_dtm: bool = False,
     use_cache: bool = True,
     cache_rate: float = 1.0,
+    class_sample_ratios: Optional[Sequence[float]] = None,
 ) -> tuple[DataLoader, DataLoader]:
     """Costruisce i DataLoader MONAI per train e validation.
 
@@ -186,6 +217,9 @@ def build_dataloaders_3d(
                      epoche, evitando di ri-decodificare i NIfTI ogni volta).
         cache_rate:  Frazione del train set da cachare (1.0 = tutto, riducibile
                      se la RAM di Colab non basta per l'intero train set).
+        class_sample_ratios: Ratios per-classe per RandCropByLabelClassesd
+                     (vedi build_train_transforms). Se None, usa
+                     DEFAULT_CLASS_SAMPLE_RATIOS (CC sovra-pesata).
 
     Returns:
         (train_loader, val_loader).
@@ -193,7 +227,10 @@ def build_dataloaders_3d(
     train_dicts = build_subject_dicts(os.path.join(data_root, "train"))
     val_dicts = build_subject_dicts(os.path.join(data_root, "val"))
 
-    train_tf = build_train_transforms(roi, num_classes, num_samples=num_samples, with_dtm=with_dtm)
+    train_tf = build_train_transforms(
+        roi, num_classes, num_samples=num_samples, with_dtm=with_dtm,
+        class_sample_ratios=class_sample_ratios,
+    )
     val_tf = build_eval_transforms(num_classes, with_dtm=False)
 
     if use_cache:

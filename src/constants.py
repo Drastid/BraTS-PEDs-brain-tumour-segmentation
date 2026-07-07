@@ -42,13 +42,16 @@ ORIG_SIZE: int = 240   # H e W di ogni volume NIfTI
 N_SLICES: int = 155    # profondita' assiale di ogni volume BraTS-PEDs
 
 # ---------------------------------------------------------------------------
-# Frequenza voxel per classe (placeholder — da ricalcolare su 5 classi)
+# Frequenza voxel per classe (placeholder — vedi scripts/compute_class_freq.py)
 # ---------------------------------------------------------------------------
 # A differenza del vecchio VOXEL_FREQ (4 valori, statistiche sporche dalla
 # remap 4->3), questo vettore va popolato con le frequenze REALI a 5 classi,
-# calcolate sul TRAIN split una volta pronto lo split.json (vedi
-# scripts/compute_class_freq.py, da creare in un punto successivo della
-# roadmap). Finche' non e' disponibile, resta a None: i chiamanti devono
-# passare le frequenze esplicitamente o calcolarle a runtime, mai assumere
-# questo fallback silenziosamente.
+# calcolate sul TRAIN split. scripts/compute_class_freq.py fa esattamente
+# questo: legge data/split_3d.json, conta i voxel per classe sul train e
+# scrive data/class_freq_3d.json (frequenze + pesi) e
+# data/region_class_weights.json (pesi pronti per il ramo --loss=dice_focal
+# di run_pipeline_3d.py). Resta comunque a None qui: e' un dato
+# dipendente dallo split, non una costante statica del modulo — i chiamanti
+# devono leggerlo a runtime dal JSON generato, mai assumere questo fallback
+# silenziosamente.
 VOXEL_FREQ: np.ndarray | None = None

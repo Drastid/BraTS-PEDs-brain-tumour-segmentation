@@ -104,6 +104,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=2)
     p.add_argument("--num-samples", type=int, default=2,
                    help="Patch campionate per volume ad ogni draw di training.")
+    p.add_argument("--class-sample-ratios", type=float, nargs=5, default=None,
+                   metavar=("BG", "ET", "NET", "CC", "ED"),
+                   help="Ratios per-classe di RandCropByLabelClassesd (src/dataset_3d.py), "
+                        "5 valori nell'ordine BG,ET,NET,CC,ED. Default (se omesso): "
+                        "DEFAULT_CLASS_SAMPLE_RATIOS = (1,2,2,4,2) — CC sovra-pesata "
+                        "2x rispetto alle altre sub-regioni foreground, essendo la piu' "
+                        "rara (vedi scripts/compute_class_freq.py per la diagnosi).")
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--no-cache", dest="use_cache", action="store_false",
                    help="Disattiva CacheDataset per il train set: usa un Dataset semplice "
@@ -364,6 +371,7 @@ def _train_one_arch(args: argparse.Namespace, arch: str, device) -> float:
         batch_size=args.batch_size, num_samples=args.num_samples,
         num_workers=args.num_workers, with_dtm=with_dtm,
         use_cache=args.use_cache, cache_rate=args.cache_rate,
+        class_sample_ratios=args.class_sample_ratios,
     )
 
     # --- Optimizer (LR differenziato backbone/head) ---
@@ -381,7 +389,21 @@ def _train_one_arch(args: argparse.Namespace, arch: str, device) -> float:
 
     # --- Loss ---
     if args.loss == "dice_focal":
-        criterion = build_dice_focal_loss(num_classes=args.num_classes).to(device)
+        # region_class_weights.json e' generato da scripts/compute_class_freq.py
+        # (pesi inverse-frequency Eq.13, calcolati sul TRAIN split) — file
+        # DISTINTO da gsl_class_weights.json cosi' il ramo --loss=gsl resta
+        # invariato (baseline di confronto, decisione esplicita dell'utente).
+        region_weights_path = os.path.join(args.data_root, "region_class_weights.json")
+        region_weights = None
+        if os.path.isfile(region_weights_path):
+            with open(region_weights_path) as f:
+                region_weights = json.load(f)["weights"]
+        else:
+            print(f"[warn] {region_weights_path} non trovato: dice_focal userà pesi "
+                  f"uniformi (vedi scripts/compute_class_freq.py).")
+        criterion = build_dice_focal_loss(
+            num_classes=args.num_classes, class_weights=region_weights,
+        ).to(device)
     else:  # gsl
         gsl_weights_path = os.path.join(args.data_root, "gsl_class_weights.json")
         gsl_weights = None

@@ -2,7 +2,7 @@
 tests/test_dataset_3d.py
 ===========================
 Suite pytest formale per src/dataset_3d.py (roadmap §9: "test_dataset3d.py:
-shape delle patch dopo RandCropByPosNegLabeld").
+shape delle patch dopo il patch sampling di training").
 
 Fino a questo punto src/dataset_3d.py era stato verificato solo con script
 manuali inline (Punto 5 di pipeline3D.md). Questo file formalizza quelle
@@ -10,6 +10,8 @@ verifiche in test permanenti ed eseguibili via `pytest`, aggiungendo inoltre
 casi non ancora coperti: patch a dimensioni diverse, gestione di split
 vuoti/soggetti con file mancanti, e l'integrità delle etichette nelle patch
 dopo le augmentation geometriche.
+
+NOTA: il patch sampling e' passato da RandCropByPosNegLabeld (bilanciamento solo fg/bg) a RandCropByLabelClassesd (bilanciamento per-classe, con CC sovra-pesata — vedi src/dataset_3d.py::DEFAULT_CLASS_SAMPLE_RATIOS e scripts/compute_class_freq.py). I test sotto verificano shape/integrita' e restano validi indipendentemente dalla strategia di sampling usata.
 
 Tutti i test che richiedono dati reali (data/processed_3d/) vengono saltati
 automaticamente (pytest.skip) se quella cartella non e' presente in questo
@@ -88,15 +90,15 @@ def test_build_subject_dicts_missing_files_produce_unreadable_paths(tmp_path) ->
 
 
 # ---------------------------------------------------------------------------
-# Patch sampling: shape dopo RandCropByPosNegLabeld
+# Patch sampling: shape dopo RandCropByLabelClassesd
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("roi", [(64, 64, 64), (128, 128, 128)], ids=["roi64", "roi128"])
 def test_train_transform_patch_shape(roi: tuple[int, int, int]) -> None:
-    """Verifica che RandCropByPosNegLabeld produca patch della dimensione
+    """Verifica che RandCropByLabelClassesd produca patch della dimensione
     richiesta, per due ROI diverse — copre esplicitamente la richiesta della
-    roadmap ('shape delle patch dopo RandCropByPosNegLabeld')."""
+    roadmap ('shape delle patch dopo il patch sampling di training')."""
     data_root = _skip_if_no_real_data()
     dicts = build_subject_dicts(os.path.join(data_root, "train"))[:1]
 
