@@ -164,6 +164,65 @@ def predict_volume_3d(
     return pred, pred_raw, gt
 
 
+@torch.no_grad()
+def predict_probs_3d(
+    model: nn.Module,
+    data_dir: str,
+    subject_id: str,
+    device: torch.device,
+    roi: Tuple[int, int, int],
+    num_classes: int = NUM_CLASSES,
+    sw_batch_size: int = 4,
+    overlap: float = 0.5,
+) -> Tuple[torch.Tensor, np.ndarray]:
+    """Inferenza 3D nativa per un soggetto, senza argmax: ritorna le probabilita'
+    softmax grezze invece delle etichette di classe.
+
+    Variante di predict_volume_3d pensata per l'ENSEMBLE (src/ensemble_3d.py,
+    roadmap Sezione 2 §2.1/§2.4): l'argmax interno di predict_volume_3d butta
+    via la confidenza relativa del modello, impedendo di mediare piu' modelli
+    a livello di probabilita' (soft voting) — qui l'argmax e il post-processing
+    restano responsabilita' del CHIAMANTE, dopo l'eventuale fusione tra piu'
+    modelli. predict_volume_3d resta INVARIATA (nessuna rottura per i chiamanti
+    single-model esistenti, es. evaluate_test_set_3d): questa e' un'aggiunta,
+    non un refactor.
+
+    Args:
+        model:       Modello 3D in eval mode, su `device`.
+        data_dir:    Cartella dello split (es. data/processed_3d/test).
+        subject_id:  Identificatore del soggetto.
+        device:      Device CUDA.
+        roi:         Dimensione della finestra scorrevole (stessa del training).
+        num_classes: Numero di classi.
+        sw_batch_size: Finestre processate in parallelo dalla sliding window.
+        overlap:     Sovrapposizione tra finestre adiacenti.
+
+    Returns:
+        probs:  Float tensor [C, H, W, D] su CPU — probabilita' softmax
+                (canale 0 = background), NESSUN argmax/post-processing applicato.
+        gt_vol: np.ndarray [H, W, D] int16 — etichette ground-truth (volume
+                intero, nessun crop).
+    """
+    subj_dir = os.path.join(data_dir, subject_id)
+    image_paths = [os.path.join(subj_dir, f"{subject_id}-{mod}.nii.gz") for mod in MODALITIES]
+    label_path = os.path.join(subj_dir, f"{subject_id}-seg.nii.gz")
+
+    transform = build_eval_transforms(num_classes=num_classes, with_dtm=False)
+    data = transform({"image": image_paths, "label": label_path})
+
+    image = data["image"].unsqueeze(0).to(device)  # [1, 4, H, W, D]
+    gt = data["label"].squeeze(0).squeeze(0).cpu().numpy().astype(np.int16)  # [H, W, D]
+
+    model.eval()
+    logits = sliding_window_inference(
+        inputs=image, roi_size=roi, sw_batch_size=sw_batch_size,
+        predictor=model, overlap=overlap, mode="gaussian",
+    )
+    probs = torch.softmax(logits, dim=1).squeeze(0).cpu()  # [C, H, W, D]
+
+    return probs, gt
+
+
 # ---------------------------------------------------------------------------
 # NIfTI export
 # ---------------------------------------------------------------------------
